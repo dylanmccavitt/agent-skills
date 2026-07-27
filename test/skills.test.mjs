@@ -493,3 +493,84 @@ test("single-quoted successor anchors count as linked", () => {
   assert.notEqual(again.status, 0);
   assert.match(again.stderr, /already superseded/);
 });
+
+test("decision-shelf proto lanes live beside their record and settle with it", () => {
+  const cli = resolve(root, "bin", "decision-shelf.mjs");
+  const shelf = mkdtempSync(join(tmpdir(), "decision-shelf-proto-"));
+  const workspace = mkdtempSync(join(tmpdir(), "decision-shelf-repo-"));
+  mkdirSync(join(workspace, "project"), { recursive: true });
+  const env = { ...process.env, DECISION_SHELF_HOME: shelf };
+  const run = (args) =>
+    spawnSync(process.execPath, [cli, ...args], {
+      cwd: join(workspace, "project"),
+      env,
+      encoding: "utf8",
+    });
+
+  // A lane cannot exist without a record.
+  const orphan = run(["proto", "nothing-here", "new"]);
+  assert.notEqual(orphan.status, 0);
+  assert.match(orphan.stderr, /no record matching/);
+
+  const record = run(["new", "Pick a pagination style"]).stdout.trim();
+  const lane = record.replace(/\.html$/, ".proto");
+
+  // new creates the lane beside the record, then variant stubs inside it.
+  const bare = run(["proto", record, "new"]);
+  assert.equal(bare.status, 0, bare.stderr);
+  assert.equal(bare.stdout.trim(), lane);
+  const cursor = run(["proto", record, "new", "cursor-based"]);
+  assert.equal(cursor.status, 0, cursor.stderr);
+  assert.match(cursor.stdout, /cursor-based\/index\.html$/m);
+  run(["proto", record, "new", "page-numbers"]);
+  const duplicateVariant = run(["proto", record, "new", "cursor-based"]);
+  assert.notEqual(duplicateVariant.status, 0);
+  assert.match(duplicateVariant.stderr, /variant already exists/);
+
+  // view prints one URL per variant.
+  const view = run(["proto", record, "view"]);
+  assert.equal(view.status, 0, view.stderr);
+  assert.match(view.stdout, /cursor-based\s+file:\/\/.*cursor-based\/index\.html/);
+  assert.match(view.stdout, /page-numbers\s+file:\/\/.*page-numbers\/index\.html/);
+
+  // promote writes the Prototype field and an evidence row in one pass.
+  const missing = run(["proto", record, "promote", "sidebar"]);
+  assert.notEqual(missing.status, 0);
+  assert.match(missing.stderr, /no variant "sidebar"/);
+  const promoted = run(["proto", record, "promote", "cursor-based"]);
+  assert.equal(promoted.status, 0, promoted.stderr);
+  const afterPromote = readFileSync(record, "utf8");
+  assert.match(afterPromote, /<dt>Prototype<\/dt><dd>\.\/[^<]*cursor-based\/<\/dd>/);
+  assert.match(afterPromote, /<td>Prototype: cursor-based<\/td>/);
+  assert.match(afterPromote, /Promoted surviving variant/);
+
+  // A record missing the fields promotion touches is refused, not rewritten.
+  const pristine = readFileSync(record, "utf8");
+  writeFileSync(record, pristine.replace(/<dt>Prototype<\/dt><dd>[\s\S]*?<\/dd>/, ""));
+  const refused = run(["proto", record, "promote", "cursor-based"]);
+  assert.notEqual(refused.status, 0);
+  assert.match(refused.stderr, /missing expected structure/);
+  writeFileSync(record, pristine);
+
+  // A settled record with a lane still present is stale; cleaning resolves it.
+  const settled = run(["status", record, "selected"]);
+  assert.equal(settled.status, 0, settled.stderr);
+  const staleWithLane = run(["list", "--stale"]);
+  assert.match(staleWithLane.stdout, /selected with a prototype lane still present/);
+
+  const clean = run(["proto", record, "clean"]);
+  assert.equal(clean.status, 0, clean.stderr);
+  assert.match(clean.stdout, /removed .*\.proto \(2 variants\)/);
+  assert.ok(!existsSync(lane), "the lane is gone");
+  assert.match(
+    readFileSync(record, "utf8"),
+    /<td>Prototype: cursor-based<\/td>/,
+    "the record keeps the promoted outcome after clean",
+  );
+  const staleAfterClean = run(["list", "--stale"]);
+  assert.match(staleAfterClean.stdout, /No stale records/);
+
+  const nothingToClean = run(["proto", record, "clean"]);
+  assert.notEqual(nothingToClean.status, 0);
+  assert.match(nothingToClean.stderr, /no prototype lane to remove/);
+});

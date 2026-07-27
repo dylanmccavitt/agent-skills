@@ -7,15 +7,17 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   readdirSync,
   readFileSync,
   realpathSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const TEMPLATE = join(packageRoot, "compass", "assets", "decision-record.html");
@@ -42,6 +44,15 @@ Usage:
                                      Mark <old> superseded and link its successor
   decision-shelf find <text>         Find records matching text in name or content
   decision-shelf bridge <record>     Turn a record's acceptance criteria into failing tests
+  decision-shelf proto <record> new [variant]
+                                     Create the record's disposable prototype lane
+                                     beside it (and a variant folder with a stub)
+  decision-shelf proto <record> view Print one URL or path per variant
+  decision-shelf proto <record> promote <variant>
+                                     Record the surviving variant in the record's
+                                     Prototype field and evidence table, one write
+  decision-shelf proto <record> clean
+                                     Remove the lane; the record keeps the outcome
   decision-shelf help                Show this help
 
 Statuses (set with \`status\`; \`supersede\` is the only way to set superseded):
@@ -51,7 +62,9 @@ Statuses (set with \`status\`; \`supersede\` is the only way to set superseded):
   superseded  replaced by a newer record; the successor is linked
 
 A record is stale when it is exploring or selected with no update in 30 days,
-or superseded without a successor link. Rejected records are never stale.
+superseded without a successor link, or settled (selected, rejected, or
+superseded) with a prototype lane still present. A lane is expected while
+exploring; it outliving the decision is what staleness flags.
 
 Conventions:
   - One record per decision, named YYYY-MM-DD-<slug>.html.
@@ -115,7 +128,14 @@ function recordSummary(path) {
   const header = text.match(/<header>[\s\S]*?<\/header>/)?.[0] || "";
   const successor = header.match(/<dt>Superseded by<\/dt>\s*<dd>([\s\S]*?)<\/dd>/);
   const linked = Boolean(successor && SUCCESSOR_ANCHOR.test(successor[1]));
-  return { status, updated, title, linked };
+  const lane = existsSync(lanePath(path));
+  return { status, updated, title, linked, lane };
+}
+
+// The prototype lane lives beside its record, named after it: the record is
+// the only thing that can own one.
+function lanePath(recordPath) {
+  return recordPath.replace(/\.html$/, ".proto");
 }
 
 // Records are hand-edited semantic HTML: both valid attribute quoting forms
@@ -125,14 +145,22 @@ const SUCCESSOR_ANCHOR = /<a\s[^>]*href\s*=\s*("[^"]+"|'[^']+')/;
 const STALE_AFTER_DAYS = 30;
 
 // A record needs attention when its status promises activity that stopped,
-// or promises a successor that was never linked. Rejected records are
-// archival and never stale.
+// promises a successor that was never linked, or is settled while its
+// disposable prototype lane still exists. A lane is expected while
+// exploring; it outliving the decision is the smell.
 export function staleReason(summary, now = new Date()) {
-  const { status, updated, linked } = summary;
+  const { status, updated, linked, lane } = summary;
   if (status === "superseded") {
-    return linked ? null : "superseded without a successor link";
+    if (!linked) return "superseded without a successor link";
+    return lane ? "superseded with a prototype lane still present" : null;
+  }
+  if (status === "rejected") {
+    return lane ? "rejected with a prototype lane still present" : null;
   }
   if (status !== "exploring" && status !== "selected") return null;
+  if (status === "selected" && lane) {
+    return "selected with a prototype lane still present";
+  }
   const age = Math.floor((now - new Date(updated)) / 86_400_000);
   if (!updated || Number.isNaN(age)) return "no readable data-updated date";
   return age >= STALE_AFTER_DAYS ? `${status} with no update in ${age} days` : null;
@@ -200,7 +228,7 @@ function commandList(shelf, project, { all = false, stale = false } = {}) {
   if (total === 0) {
     console.log(
       stale
-        ? "No stale records — every record is either current, rejected, or superseded with a successor."
+        ? "No stale records — every record is current or settled cleanly (successor linked, no lane left behind)."
         : all
           ? `No records on the shelf: ${shelf}`
           : `No records for this project. Create one with: decision-shelf new "<question>"`,
@@ -627,6 +655,107 @@ function commandSupersede(shelf, project, rest) {
   console.log(`by:         ${newPath}`);
 }
 
+const PROTO_USAGE = "proto <record> <new [variant] | view | promote <variant> | clean>";
+
+function laneVariants(lane) {
+  return readdirSync(lane, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .sort();
+}
+
+function commandProto(shelf, project, rest) {
+  const [recordQuery, action, ...args] = rest;
+  if (!recordQuery || !action) throw new Error(`usage: ${PROTO_USAGE}`);
+  const recordPath = resolveRecord(shelf, project, recordQuery, PROTO_USAGE);
+  const lane = lanePath(recordPath);
+  const variantArg = slugify(args.join(" ").trim() || "");
+
+  if (action === "new") {
+    mkdirSync(lane, { recursive: true });
+    if (!args.length) {
+      console.log(lane);
+      return;
+    }
+    const directory = join(lane, variantArg);
+    if (existsSync(directory)) {
+      throw new Error(`variant already exists: ${directory}`);
+    }
+    mkdirSync(directory);
+    const entry = join(directory, "index.html");
+    writeFileSync(
+      entry,
+      [
+        "<!doctype html>",
+        '<meta charset="utf-8">',
+        `<title>${variantArg} — disposable prototype</title>`,
+        `<p>Disposable prototype variant "${variantArg}". Replace this stub;`,
+        "the lane is deleted after the decision — durable outcome goes in the record.</p>",
+        "",
+      ].join("\n"),
+      { flag: "wx" },
+    );
+    console.log(entry);
+  } else if (action === "view") {
+    if (!existsSync(lane)) {
+      throw new Error(`no prototype lane for this record — create one: proto <record> new [variant]`);
+    }
+    const variants = laneVariants(lane);
+    if (variants.length === 0) {
+      console.log(`(empty lane) ${lane}`);
+      return;
+    }
+    const width = Math.max(...variants.map((name) => name.length));
+    for (const name of variants) {
+      const entry = join(lane, name, "index.html");
+      const target = existsSync(entry) ? pathToFileURL(entry).href : join(lane, name);
+      console.log(`${name.padEnd(width)}   ${target}`);
+    }
+  } else if (action === "promote") {
+    if (!args.length) throw new Error(`provide the surviving variant: ${PROTO_USAGE}`);
+    const directory = join(lane, variantArg);
+    if (!existsSync(directory)) {
+      throw new Error(
+        `no variant "${variantArg}" in the lane (see: decision-shelf proto <record> view)`,
+      );
+    }
+    // One read, full preflight, one write: a record missing any field the
+    // promotion touches is refused, never partially rewritten.
+    const text = readFileSync(recordPath, "utf8");
+    const required = [/<dt>Prototype<\/dt><dd>[\s\S]*?<\/dd>/, /<\/tbody>/, /data-updated="[^"]*"/];
+    if (!required.every((pattern) => pattern.test(text))) {
+      throw new Error(
+        `record is missing expected structure (Prototype field, evidence table, data-updated) — edit it by hand:\n${recordPath}`,
+      );
+    }
+    const today = new Date().toISOString().slice(0, 10);
+    const relative = `./${basename(lane)}/${variantArg}/`;
+    const row =
+      `          <tr><td>Prototype: ${variantArg}</td><td>${relative}</td>` +
+      `<td>${today}</td><td>Promoted surviving variant from the proto lane</td></tr>\n        </tbody>`;
+    writeFileSync(
+      recordPath,
+      text
+        .replace(/(<dt>Prototype<\/dt><dd>)[\s\S]*?(<\/dd>)/, `$1${relative}$2`)
+        .replace(/(\s*)<\/tbody>/, `\n${row}`)
+        .replace(/data-updated="[^"]*"/, `data-updated="${today}"`)
+        .replace(/(<dt>Updated<\/dt><dd>)[^<]*(<\/dd>)/, `$1${today}$2`),
+    );
+    console.log(`promoted: ${variantArg}`);
+    console.log(`record updated: ${recordPath}`);
+  } else if (action === "clean") {
+    if (!existsSync(lane)) throw new Error(`no prototype lane to remove for:\n${recordPath}`);
+    if (lstatSync(lane).isSymbolicLink()) {
+      throw new Error(`lane is a symlink — refusing to remove:\n${lane}`);
+    }
+    const count = laneVariants(lane).length;
+    rmSync(lane, { recursive: true });
+    console.log(`removed ${lane} (${count} variant${count === 1 ? "" : "s"})`);
+  } else {
+    throw new Error(`unknown proto action: ${action} (usage: ${PROTO_USAGE})`);
+  }
+}
+
 function commandBridge(shelf, project, query, cwd = process.cwd()) {
   const recordPath = resolveRecord(shelf, project, query, "bridge <record>");
   const criteria = extractBridgeCriteria(readFileSync(recordPath, "utf8"));
@@ -687,6 +816,7 @@ function main() {
   else if (command === "new") commandNew(shelf, project, rest.join(" ").trim());
   else if (command === "status") commandStatus(shelf, project, rest);
   else if (command === "supersede") commandSupersede(shelf, project, rest);
+  else if (command === "proto") commandProto(shelf, project, rest);
   else if (command === "find") commandFind(shelf, rest.join(" ").trim());
   else if (command === "bridge") commandBridge(shelf, project, rest.join(" ").trim());
   else throw new Error(`unknown command: ${command} (try: decision-shelf help)`);
