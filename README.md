@@ -74,12 +74,9 @@ Runs the skill validator (frontmatter, references, agent metadata) and the
 node test suite, which also enforces that skills stay lean guides: under 400
 words and at most three prohibitions per `SKILL.md`.
 
-## v3 migration
+## Lineage
 
-Version 3 is a breaking simplification: fewer, shorter skills that trust
-model judgment, with mechanics moved into tool interfaces. The five v2 skills collapse into three:
-`decision-lab` + `deviling` + `prototype` become `compass`, `teamwork` +
-`governed-delivery` become `relay`, and the handoff guidance becomes `cairn`.
-Decision records are unchanged HTML files managed through the `decision-shelf`
-CLI. The v2 trajectory-evaluation harness (`skills-eval`, replay cases, and
-dashboard) was removed with it.
+This package continues the retired `@dylanmccavitt/skills` package under a new
+name; the skill set and CLIs are unchanged. Installs written by the old
+package are recognized as package-owned and upgrade in place — nothing needs
+to be uninstalled first.
