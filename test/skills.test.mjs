@@ -365,3 +365,31 @@ test("supersede repairs a label-only successor field instead of refusing it", ()
   assert.notEqual(again.status, 0);
   assert.match(again.stderr, /already superseded/);
 });
+
+test("supersede refuses a record whose header list is missing", () => {
+  const cli = resolve(root, "bin", "decision-shelf.mjs");
+  const shelf = mkdtempSync(join(tmpdir(), "decision-shelf-headerless-"));
+  const workspace = mkdtempSync(join(tmpdir(), "decision-shelf-repo-"));
+  mkdirSync(join(workspace, "project"), { recursive: true });
+  const env = { ...process.env, DECISION_SHELF_HOME: shelf };
+  const run = (args) =>
+    spawnSync(process.execPath, [cli, ...args], {
+      cwd: join(workspace, "project"),
+      env,
+      encoding: "utf8",
+    });
+
+  const old = run(["new", "Pick a config format"]).stdout.trim();
+  const successor = run(["new", "Config format second pass"]).stdout.trim();
+
+  // Hand-edit removes the header list's closing tag while the Bridge's
+  // list survives: a bare "</dl>" match would misplace the successor row
+  // into the Bridge and still flip the status.
+  const mangled = readFileSync(old, "utf8").replace("</dl>", "");
+  writeFileSync(old, mangled);
+  const refused = run(["supersede", old, successor]);
+  assert.notEqual(refused.status, 0);
+  assert.match(refused.stderr, /missing its header list/);
+  assert.equal(readFileSync(old, "utf8"), mangled, "the record is left untouched");
+  assert.doesNotMatch(readFileSync(old, "utf8"), /Superseded by/);
+});

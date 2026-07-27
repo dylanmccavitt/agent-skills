@@ -266,13 +266,24 @@ const STRAY_CONTEXT_NAMES = new Set(["plan.md", "notes.md", "handoff.md", "todo.
 
 export function strayContextFiles(cwd = process.cwd()) {
   // The promise is repository-wide, and ls-files in a subdirectory lists
-  // only that subtree — so scan from the repository top level.
+  // only that subtree — so scan from the repository top level. ls-files
+  // cannot combine --recurse-submodules with the cached/others mode, so
+  // each initialized submodule is scanned recursively and its results
+  // prefixed, mirroring the fingerprint code above.
   const worktree = git(["rev-parse", "--show-toplevel"], cwd) || cwd;
   const listed = git(["ls-files", "--cached", "--others", "--exclude-standard"], worktree);
   if (!listed) return [];
-  return listed
+  const strays = listed
     .split("\n")
     .filter((path) => STRAY_CONTEXT_NAMES.has(basename(path).toLowerCase()));
+  for (const path of gitlinkPaths(worktree) || []) {
+    const nested = join(worktree, path);
+    if (!existsSync(join(nested, ".git"))) continue;
+    for (const stray of strayContextFiles(nested)) {
+      strays.push(`${path}/${stray}`);
+    }
+  }
+  return strays.sort();
 }
 
 function printStrayAdvisories(cwd) {

@@ -1002,3 +1002,22 @@ test("receipt invalidates evidence when checks mutate repository state", () => {
   assert.match(receipt, /INVALIDATED: running the checks changed repository state/);
   assert.match(receipt, /re-run the checks at the final head/);
 });
+
+test("the stray scan recurses into initialized submodules", () => {
+  const sub = gitRepo();
+  writeFileSync(join(sub.repo, "plan.md"), "stray in submodule\n");
+  sub.git("add", ".");
+  sub.git("commit", "-m", "sub stray");
+
+  const superRepo = gitRepo();
+  execFileSync(
+    "git",
+    ["-c", "protocol.file.allow=always", "submodule", "add", sub.repo, "sm"],
+    { cwd: superRepo.repo, encoding: "utf8" },
+  );
+  writeFileSync(join(superRepo.repo, "notes.md"), "stray in superproject\n");
+  superRepo.git("add", ".");
+  superRepo.git("commit", "-m", "super stray");
+
+  assert.deepEqual(strayContextFiles(superRepo.repo), ["notes.md", "sm/plan.md"]);
+});

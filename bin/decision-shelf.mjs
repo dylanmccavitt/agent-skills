@@ -579,22 +579,31 @@ function commandSupersede(shelf, project, rest) {
   if (existing && /<a\s[^>]*href="[^"]+"/.test(existing[1])) {
     throw new Error(`already superseded — edit it by hand if the successor changed:\n${oldPath}`);
   }
-  if (!text.includes("</dl>")) {
+  // The successor row belongs in the header's list specifically — a bare
+  // "</dl>" match could belong to the Bridge and would misplace the row
+  // while still flipping the status, so the header list is validated and
+  // the insertion is scoped to it.
+  if (!existing && !/<header>[\s\S]*?<\/dl>[\s\S]*?<\/header>/.test(text)) {
     throw new Error(`record is missing its header list — edit it by hand:\n${oldPath}`);
   }
   const successor = recordSummary(newPath);
   const href = dirname(oldPath) === dirname(newPath) ? basename(newPath) : newPath;
   const anchor = `<a href="${href}">${successor.title}</a>`;
   const transformed = statusTransforms(text, "superseded", oldPath);
-  const linked = existing
-    ? transformed.replace(
-        /<dt>Superseded by<\/dt>\s*<dd>[\s\S]*?<\/dd>/,
-        () => `<dt>Superseded by</dt><dd>${anchor}</dd>`,
-      )
-    : transformed.replace(
-        "</dl>",
-        `  <dt>Superseded by</dt><dd>${anchor}</dd>\n      </dl>`,
-      );
+  let linked;
+  if (existing) {
+    linked = transformed.replace(
+      /<dt>Superseded by<\/dt>\s*<dd>[\s\S]*?<\/dd>/,
+      () => `<dt>Superseded by</dt><dd>${anchor}</dd>`,
+    );
+  } else {
+    const header = transformed.match(/<header>[\s\S]*?<\/header>/)[0];
+    const patched = header.replace(
+      "</dl>",
+      `  <dt>Superseded by</dt><dd>${anchor}</dd>\n      </dl>`,
+    );
+    linked = transformed.replace(header, () => patched);
+  }
   writeFileSync(oldPath, linked);
   console.log(`superseded: ${oldPath}`);
   console.log(`by:         ${newPath}`);
