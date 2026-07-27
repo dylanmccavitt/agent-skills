@@ -271,10 +271,14 @@ export function strayContextFiles(cwd = process.cwd()) {
   // each initialized submodule is scanned recursively and its results
   // prefixed, mirroring the fingerprint code above.
   const worktree = git(["rev-parse", "--show-toplevel"], cwd) || cwd;
-  const listed = git(["ls-files", "--cached", "--others", "--exclude-standard"], worktree);
+  // NUL-delimited output (-z): with the default core.quotePath, a non-ASCII
+  // path comes back C-style-quoted on newline output and its basename would
+  // never match. NUL delimiting returns paths verbatim.
+  const listed = git(["ls-files", "-z", "--cached", "--others", "--exclude-standard"], worktree);
   if (!listed) return [];
   const strays = listed
-    .split("\n")
+    .split("\0")
+    .filter(Boolean)
     .filter((path) => STRAY_CONTEXT_NAMES.has(basename(path).toLowerCase()));
   for (const path of gitlinkPaths(worktree) || []) {
     const nested = join(worktree, path);

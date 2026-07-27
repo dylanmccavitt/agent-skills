@@ -109,9 +109,11 @@ function recordSummary(path) {
   const status = text.match(/data-status="([^"]*)"/)?.[1] || "unknown";
   const updated = text.match(/data-updated="([^"]*)"/)?.[1] || "";
   const title = text.match(/<h1>([^<]*)<\/h1>/)?.[1] || basename(path);
-  // Only an actual successor anchor counts as linked — a hand-edited field
-  // label with empty or plain-text content still leaves the record stale.
-  const successor = text.match(/<dt>Superseded by<\/dt>\s*<dd>([\s\S]*?)<\/dd>/);
+  // Only an actual successor anchor in the record's header counts as
+  // linked — a hand-edited label with empty or plain-text content, or a
+  // row misplaced outside the header, still leaves the record stale.
+  const header = text.match(/<header>[\s\S]*?<\/header>/)?.[0] || "";
+  const successor = header.match(/<dt>Superseded by<\/dt>\s*<dd>([\s\S]*?)<\/dd>/);
   const linked = Boolean(successor && /<a\s[^>]*href="[^"]+"/.test(successor[1]));
   return { status, updated, title, linked };
 }
@@ -571,40 +573,41 @@ function commandSupersede(shelf, project, rest) {
   const newPath = resolveRecord(shelf, project, rest[1], usage);
   if (oldPath === newPath) throw new Error("a record cannot supersede itself");
   const text = readFileSync(oldPath, "utf8");
+  // The successor row belongs in the header's list specifically. Detection,
+  // repair, and insertion are all scoped there: a row outside the header —
+  // or a bare "</dl>" that belongs to the Bridge — would leave the header
+  // without its successor while the record still flips to superseded, so
+  // misplaced structure is refused before any mutation.
+  const rowPattern = /<dt>Superseded by<\/dt>\s*<dd>([\s\S]*?)<\/dd>/;
+  const headerText = text.match(/<header>[\s\S]*?<\/header>/)?.[0];
+  const existing = headerText ? headerText.match(rowPattern) : null;
+  if (!existing && rowPattern.test(text)) {
+    throw new Error(
+      `a Superseded by row exists outside the record's header — edit it by hand:\n${oldPath}`,
+    );
+  }
   // Only a valid successor anchor means "already superseded". A field label
   // with an empty or plain-text value is exactly the malformed state that
   // list --stale reports, so supersede repairs that row in place — refusing
   // it would leave the CLI unable to fix the condition it diagnoses.
-  const existing = text.match(/<dt>Superseded by<\/dt>\s*<dd>([\s\S]*?)<\/dd>/);
   if (existing && /<a\s[^>]*href="[^"]+"/.test(existing[1])) {
     throw new Error(`already superseded — edit it by hand if the successor changed:\n${oldPath}`);
   }
-  // The successor row belongs in the header's list specifically — a bare
-  // "</dl>" match could belong to the Bridge and would misplace the row
-  // while still flipping the status, so the header list is validated and
-  // the insertion is scoped to it.
-  if (!existing && !/<header>[\s\S]*?<\/dl>[\s\S]*?<\/header>/.test(text)) {
+  if (!headerText || (!existing && !headerText.includes("</dl>"))) {
     throw new Error(`record is missing its header list — edit it by hand:\n${oldPath}`);
   }
   const successor = recordSummary(newPath);
   const href = dirname(oldPath) === dirname(newPath) ? basename(newPath) : newPath;
   const anchor = `<a href="${href}">${successor.title}</a>`;
   const transformed = statusTransforms(text, "superseded", oldPath);
-  let linked;
-  if (existing) {
-    linked = transformed.replace(
-      /<dt>Superseded by<\/dt>\s*<dd>[\s\S]*?<\/dd>/,
-      () => `<dt>Superseded by</dt><dd>${anchor}</dd>`,
-    );
-  } else {
-    const header = transformed.match(/<header>[\s\S]*?<\/header>/)[0];
-    const patched = header.replace(
-      "</dl>",
-      `  <dt>Superseded by</dt><dd>${anchor}</dd>\n      </dl>`,
-    );
-    linked = transformed.replace(header, () => patched);
-  }
-  writeFileSync(oldPath, linked);
+  const transformedHeader = transformed.match(/<header>[\s\S]*?<\/header>/)[0];
+  const patched = existing
+    ? transformedHeader.replace(rowPattern, () => `<dt>Superseded by</dt><dd>${anchor}</dd>`)
+    : transformedHeader.replace(
+        "</dl>",
+        `  <dt>Superseded by</dt><dd>${anchor}</dd>\n      </dl>`,
+      );
+  writeFileSync(oldPath, transformed.replace(transformedHeader, () => patched));
   console.log(`superseded: ${oldPath}`);
   console.log(`by:         ${newPath}`);
 }
