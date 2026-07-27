@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -492,4 +501,244 @@ test("single-quoted successor anchors count as linked", () => {
   const again = run(["supersede", record, other]);
   assert.notEqual(again.status, 0);
   assert.match(again.stderr, /already superseded/);
+});
+
+test("decision-shelf proto lanes live beside their record and settle with it", () => {
+  const cli = resolve(root, "bin", "decision-shelf.mjs");
+  const shelf = mkdtempSync(join(tmpdir(), "decision-shelf-proto-"));
+  const workspace = mkdtempSync(join(tmpdir(), "decision-shelf-repo-"));
+  mkdirSync(join(workspace, "project"), { recursive: true });
+  const env = { ...process.env, DECISION_SHELF_HOME: shelf };
+  const run = (args) =>
+    spawnSync(process.execPath, [cli, ...args], {
+      cwd: join(workspace, "project"),
+      env,
+      encoding: "utf8",
+    });
+
+  // A lane cannot exist without a record.
+  const orphan = run(["proto", "nothing-here", "new"]);
+  assert.notEqual(orphan.status, 0);
+  assert.match(orphan.stderr, /no record matching/);
+
+  const record = run(["new", "Pick a pagination style"]).stdout.trim();
+  const lane = record.replace(/\.html$/, ".proto");
+
+  // new creates the lane beside the record, then variant stubs inside it.
+  const bare = run(["proto", record, "new"]);
+  assert.equal(bare.status, 0, bare.stderr);
+  assert.equal(bare.stdout.trim(), lane);
+  assert.ok(
+    existsSync(join(lane, ".decision-shelf-lane")),
+    "creation writes the ownership marker",
+  );
+  const cursor = run(["proto", record, "new", "cursor-based"]);
+  assert.equal(cursor.status, 0, cursor.stderr);
+  assert.match(cursor.stdout, /cursor-based\/index\.html$/m);
+  run(["proto", record, "new", "page-numbers"]);
+  const duplicateVariant = run(["proto", record, "new", "cursor-based"]);
+  assert.notEqual(duplicateVariant.status, 0);
+  assert.match(duplicateVariant.stderr, /variant already exists/);
+
+  // view prints one URL per variant.
+  const view = run(["proto", record, "view"]);
+  assert.equal(view.status, 0, view.stderr);
+  assert.match(view.stdout, /cursor-based\s+file:\/\/.*cursor-based\/index\.html/);
+  assert.match(view.stdout, /page-numbers\s+file:\/\/.*page-numbers\/index\.html/);
+
+  // promote writes the Prototype field and an evidence row in one pass.
+  const missing = run(["proto", record, "promote", "sidebar"]);
+  assert.notEqual(missing.status, 0);
+  assert.match(missing.stderr, /no variant "sidebar"/);
+  const promoted = run(["proto", record, "promote", "cursor-based"]);
+  assert.equal(promoted.status, 0, promoted.stderr);
+  const afterPromote = readFileSync(record, "utf8");
+  assert.match(afterPromote, /<dt>Prototype<\/dt><dd>\.\/[^<]*cursor-based\/<\/dd>/);
+  assert.match(afterPromote, /<td>Prototype: cursor-based<\/td>/);
+  assert.match(afterPromote, /Promoted surviving variant/);
+
+  // A record missing the fields promotion touches is refused, not rewritten.
+  const pristine = readFileSync(record, "utf8");
+  writeFileSync(record, pristine.replace(/<dt>Prototype<\/dt><dd>[\s\S]*?<\/dd>/, ""));
+  const refused = run(["proto", record, "promote", "cursor-based"]);
+  assert.notEqual(refused.status, 0);
+  assert.match(refused.stderr, /missing expected structure/);
+  writeFileSync(record, pristine.replace(/<dt>Updated<\/dt><dd>[^<]*<\/dd>/, ""));
+  const refusedDate = run(["proto", record, "promote", "cursor-based"]);
+  assert.notEqual(refusedDate.status, 0, "a missing visible Updated row is refused too");
+  assert.match(refusedDate.stderr, /missing expected structure/);
+
+  // Promotion targets the comparison section's table even when an earlier
+  // hand-added table exists.
+  writeFileSync(
+    record,
+    pristine.replace(
+      '<h2 id="constraints">Constraints</h2>',
+      '<h2 id="constraints">Constraints</h2>\n      <table><tbody><tr><td>unrelated</td></tr></tbody></table>',
+    ),
+  );
+  const scoped = run(["proto", record, "promote", "page-numbers"]);
+  assert.equal(scoped.status, 0, scoped.stderr);
+  const scopedText = readFileSync(record, "utf8");
+  assert.ok(
+    scopedText.indexOf("Prototype: page-numbers") > scopedText.indexOf('id="comparison"'),
+    "the evidence row lands in the comparison table",
+  );
+  assert.doesNotMatch(
+    scopedText.slice(0, scopedText.indexOf('id="comparison"')),
+    /Prototype: page-numbers/,
+    "the earlier table gains nothing",
+  );
+
+  // Duplicate labels elsewhere never receive the promotion's mutations:
+  // the Bridge Prototype and header Updated are patched in their own
+  // sections while the decoys stay byte-identical.
+  const today = new Date().toISOString().slice(0, 10);
+  writeFileSync(
+    record,
+    pristine.replace(
+      '<h2 id="constraints">Constraints</h2>',
+      '<h2 id="constraints">Constraints</h2>\n      <dl><dt>Prototype</dt><dd>decoy</dd><dt>Updated</dt><dd>1999-01-01</dd></dl>',
+    ),
+  );
+  const scopedFields = run(["proto", record, "promote", "page-numbers"]);
+  assert.equal(scopedFields.status, 0, scopedFields.stderr);
+  const fieldsText = readFileSync(record, "utf8");
+  assert.match(fieldsText, /<dt>Prototype<\/dt><dd>decoy<\/dd>/);
+  assert.match(fieldsText, /<dt>Updated<\/dt><dd>1999-01-01<\/dd>/);
+  assert.match(fieldsText, /<dt>Prototype<\/dt><dd>\.\/[^<]*page-numbers\/<\/dd>/);
+  assert.match(fieldsText, new RegExp(`<dt>Updated</dt><dd>${today}</dd>`));
+
+  // A file or symlink at the variant path is not a promotable variant.
+  writeFileSync(join(lane, "filey"), "not a directory\n");
+  const fileVariant = run(["proto", record, "promote", "filey"]);
+  assert.notEqual(fileVariant.status, 0);
+  assert.match(fileVariant.stderr, /no variant "filey"/);
+  symlinkSync(join(lane, "cursor-based"), join(lane, "linky"));
+  const linkVariant = run(["proto", record, "promote", "linky"]);
+  assert.notEqual(linkVariant.status, 0);
+  assert.match(linkVariant.stderr, /no variant "linky"/);
+  writeFileSync(record, pristine);
+
+  // A settled record with a lane still present is stale; cleaning resolves it.
+  const settled = run(["status", record, "selected"]);
+  assert.equal(settled.status, 0, settled.stderr);
+  const staleWithLane = run(["list", "--stale"]);
+  assert.match(staleWithLane.stdout, /selected with a prototype lane still present/);
+
+  const clean = run(["proto", record, "clean"]);
+  assert.equal(clean.status, 0, clean.stderr);
+  assert.match(clean.stdout, /removed .*\.proto \(2 variants\)/);
+  assert.ok(!existsSync(lane), "the lane is gone");
+  assert.match(
+    readFileSync(record, "utf8"),
+    /<td>Prototype: cursor-based<\/td>/,
+    "the record keeps the promoted outcome after clean",
+  );
+  const staleAfterClean = run(["list", "--stale"]);
+  assert.match(staleAfterClean.stdout, /No stale records/);
+
+  const nothingToClean = run(["proto", record, "clean"]);
+  assert.notEqual(nothingToClean.status, 0);
+  assert.match(nothingToClean.stderr, /no prototype lane to remove/);
+});
+
+test("proto refuses unmanaged and symlinked lane paths outright", () => {
+  const cli = resolve(root, "bin", "decision-shelf.mjs");
+  const shelf = mkdtempSync(join(tmpdir(), "decision-shelf-ownership-"));
+  const workspace = mkdtempSync(join(tmpdir(), "decision-shelf-repo-"));
+  mkdirSync(join(workspace, "project"), { recursive: true });
+  const env = { ...process.env, DECISION_SHELF_HOME: shelf };
+  const run = (args) =>
+    spawnSync(process.execPath, [cli, ...args], {
+      cwd: join(workspace, "project"),
+      env,
+      encoding: "utf8",
+    });
+
+  // A pre-existing ordinary directory at the lane path is user data: the
+  // filename alone is not ownership. Every action refuses; nothing is
+  // adopted, written into, or deleted.
+  const record = run(["new", "Choose an id scheme"]).stdout.trim();
+  const lane = record.replace(/\.html$/, ".proto");
+  mkdirSync(lane);
+  writeFileSync(join(lane, "precious.txt"), "user data\n");
+  for (const args of [["new", "variant-a"], ["view"], ["promote", "variant-a"], ["clean"]]) {
+    const refused = run(["proto", record, ...args]);
+    assert.notEqual(refused.status, 0, `proto ${args.join(" ")} must refuse an unmanaged directory`);
+    assert.match(refused.stderr, /not created by proto/);
+  }
+  assert.equal(
+    readFileSync(join(lane, "precious.txt"), "utf8"),
+    "user data\n",
+    "unmanaged directory contents are untouched",
+  );
+
+  // Unowned directories never drive lane staleness.
+  run(["status", record, "selected"]);
+  const stale = run(["list", "--stale"]);
+  assert.doesNotMatch(stale.stdout, /prototype lane still present/);
+
+  // A lane moved or copied from another record fails marker validation:
+  // its marker names the original record, so nothing here owns it.
+  const recordA = run(["new", "Choose a logger"]).stdout.trim();
+  run(["proto", recordA, "new", "v1"]);
+  const recordB = run(["new", "Choose a tracer"]).stdout.trim();
+  const laneB = recordB.replace(/\.html$/, ".proto");
+  renameSync(recordA.replace(/\.html$/, ".proto"), laneB);
+  const moved = run(["proto", recordB, "clean"]);
+  assert.notEqual(moved.status, 0);
+  assert.match(moved.stderr, /not created by proto for this record/);
+  assert.ok(
+    existsSync(join(laneB, "v1", "index.html")),
+    "the moved lane's contents are untouched",
+  );
+
+  // A symlinked lane path is refused before any traversal or write.
+  const second = run(["new", "Choose a palette"]).stdout.trim();
+  const target = mkdtempSync(join(tmpdir(), "decision-shelf-lane-target-"));
+  symlinkSync(target, second.replace(/\.html$/, ".proto"));
+  for (const args of [["new", "v1"], ["view"], ["clean"]]) {
+    const refused = run(["proto", second, ...args]);
+    assert.notEqual(refused.status, 0, `proto ${args.join(" ")} must refuse a symlinked lane`);
+    assert.match(refused.stderr, /symlink/);
+  }
+  assert.deepEqual(readdirSync(target), [], "symlink target is never written or removed");
+});
+
+test("lane ownership is project-qualified, not basename-deep", () => {
+  const cli = resolve(root, "bin", "decision-shelf.mjs");
+  const shelf = mkdtempSync(join(tmpdir(), "decision-shelf-crossproject-"));
+  const workspace = mkdtempSync(join(tmpdir(), "decision-shelf-repos-"));
+  const projectOne = join(workspace, "one");
+  const projectTwo = join(workspace, "two");
+  mkdirSync(projectOne, { recursive: true });
+  mkdirSync(projectTwo, { recursive: true });
+  const env = { ...process.env, DECISION_SHELF_HOME: shelf };
+  const runIn = (cwd, args) =>
+    spawnSync(process.execPath, [cli, ...args], { cwd, env, encoding: "utf8" });
+
+  // Same question, same day, two projects: identical record basenames.
+  const recordOne = runIn(projectOne, ["new", "Pick a store"]).stdout.trim();
+  runIn(projectOne, ["proto", recordOne, "new", "v1"]);
+  const recordTwo = runIn(projectTwo, ["new", "Pick a store"]).stdout.trim();
+  assert.notEqual(recordOne, recordTwo);
+  assert.ok(
+    recordOne.endsWith(recordTwo.slice(recordTwo.lastIndexOf("/"))),
+    "the two records share a basename",
+  );
+
+  // Moving project one's lane beside project two's record must not grant
+  // ownership: the marker names the project-qualified record.
+  renameSync(
+    recordOne.replace(/\.html$/, ".proto"),
+    recordTwo.replace(/\.html$/, ".proto"),
+  );
+  const moved = runIn(projectTwo, ["proto", recordTwo, "clean"]);
+  assert.notEqual(moved.status, 0);
+  assert.match(moved.stderr, /not created by proto for this record/);
+  assert.ok(
+    existsSync(join(recordTwo.replace(/\.html$/, ".proto"), "v1", "index.html")),
+    "the moved lane's contents are untouched",
+  );
 });
