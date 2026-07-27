@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 
+import { staleReason } from "../bin/decision-shelf.mjs";
 import { skillNames, validateSkill } from "../scripts/validate-skills.mjs";
 
 const root = resolve(new URL("..", import.meta.url).pathname);
@@ -167,6 +168,71 @@ test("decision-shelf new fills only CLI slots and leaves hand-edit placeholders 
   assert.match(record, /<td>YYYY-MM-DD<\/td>/);
   assert.match(record, /<dt>Last verified<\/dt><dd>UNVERIFIED<\/dd>/);
   assert.doesNotMatch(record, /Adopt titles for recordsS/);
+});
+
+test("staleReason marks records stale on exactly day 30", () => {
+  const now = new Date("2026-07-27T12:00:00Z");
+  const record = { status: "exploring", updated: "2026-06-27", linked: false };
+  assert.match(staleReason(record, now), /no update in 30 days/);
+  assert.equal(staleReason({ ...record, updated: "2026-06-28" }, now), null);
+});
+
+test("hand-edited lifecycle states are refused or surfaced, never silently accepted", () => {
+  const cli = resolve(root, "bin", "decision-shelf.mjs");
+  const shelf = mkdtempSync(join(tmpdir(), "decision-shelf-handedit-"));
+  const workspace = mkdtempSync(join(tmpdir(), "decision-shelf-repo-"));
+  mkdirSync(join(workspace, "project"), { recursive: true });
+  const env = { ...process.env, DECISION_SHELF_HOME: shelf };
+  const run = (args) =>
+    spawnSync(process.execPath, [cli, ...args], {
+      cwd: join(workspace, "project"),
+      env,
+      encoding: "utf8",
+    });
+
+  const first = run(["new", "Pick an auth provider"]).stdout.trim();
+  const second = run(["new", "Revisit the auth provider"]).stdout.trim();
+  assert.equal(run(["supersede", first, second]).status, 0);
+
+  // superseded is terminal for `status`: reopening would strand the
+  // successor link as stale metadata.
+  const reopened = run(["status", first, "selected"]);
+  assert.notEqual(reopened.status, 0);
+  assert.match(reopened.stderr, /superseded — create a new record/);
+  assert.match(readFileSync(first, "utf8"), /data-status="superseded"/);
+
+  // A field label without a successor anchor is not a link: the record
+  // stays visible as stale instead of silently passing.
+  writeFileSync(
+    second,
+    readFileSync(second, "utf8")
+      .replace('data-status="exploring"', 'data-status="superseded"')
+      .replace("</dl>", "  <dt>Superseded by</dt><dd>lost to a hand edit</dd>\n      </dl>"),
+  );
+  const stale = run(["list", "--stale"]);
+  assert.equal(stale.status, 0, stale.stderr);
+  assert.match(stale.stdout, /Revisit the auth provider/);
+  assert.match(stale.stdout, /superseded without a successor link/);
+  assert.doesNotMatch(
+    stale.stdout,
+    /Pick an auth provider/,
+    "a real successor anchor keeps the record out of --stale",
+  );
+
+  // A record missing its visible Updated row is refused before mutation.
+  const third = run(["new", "Choose a logging stack"]).stdout.trim();
+  writeFileSync(
+    third,
+    readFileSync(third, "utf8").replace(/<dt>Updated<\/dt><dd>[^<]*<\/dd>\s*/, ""),
+  );
+  const refused = run(["status", third, "selected"]);
+  assert.notEqual(refused.status, 0);
+  assert.match(refused.stderr, /missing expected structure/);
+  assert.match(
+    readFileSync(third, "utf8"),
+    /data-status="exploring"/,
+    "a refused record is not mutated",
+  );
 });
 
 test("decision-shelf status, supersede, and --stale manage the record lifecycle", () => {

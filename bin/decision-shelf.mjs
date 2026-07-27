@@ -109,7 +109,10 @@ function recordSummary(path) {
   const status = text.match(/data-status="([^"]*)"/)?.[1] || "unknown";
   const updated = text.match(/data-updated="([^"]*)"/)?.[1] || "";
   const title = text.match(/<h1>([^<]*)<\/h1>/)?.[1] || basename(path);
-  const linked = /<dt>Superseded by<\/dt>/.test(text);
+  // Only an actual successor anchor counts as linked — a hand-edited field
+  // label with empty or plain-text content still leaves the record stale.
+  const successor = text.match(/<dt>Superseded by<\/dt>\s*<dd>([\s\S]*?)<\/dd>/);
+  const linked = Boolean(successor && /<a\s[^>]*href="[^"]+"/.test(successor[1]));
   return { status, updated, title, linked };
 }
 
@@ -126,7 +129,7 @@ export function staleReason(summary, now = new Date()) {
   if (status !== "exploring" && status !== "selected") return null;
   const age = Math.floor((now - new Date(updated)) / 86_400_000);
   if (!updated || Number.isNaN(age)) return "no readable data-updated date";
-  return age > STALE_AFTER_DAYS ? `${status} with no update in ${age} days` : null;
+  return age >= STALE_AFTER_DAYS ? `${status} with no update in ${age} days` : null;
 }
 
 function listRecords(directory) {
@@ -515,10 +518,15 @@ function resolveRecord(shelf, project, query, usage) {
 // rather than partially rewritten.
 function statusTransforms(text, status, recordPath) {
   const today = new Date().toISOString().slice(0, 10);
-  const required = [/data-status="[^"]*"/, /<p class="status">[^<]*<\/p>/, /data-updated="[^"]*"/];
+  const required = [
+    /data-status="[^"]*"/,
+    /<p class="status">[^<]*<\/p>/,
+    /data-updated="[^"]*"/,
+    /<dt>Updated<\/dt><dd>[^<]*<\/dd>/,
+  ];
   if (!required.every((pattern) => pattern.test(text))) {
     throw new Error(
-      `record is missing expected structure (data-status, status chip, data-updated) — edit it by hand:\n${recordPath}`,
+      `record is missing expected structure (data-status, status chip, data-updated, Updated row) — edit it by hand:\n${recordPath}`,
     );
   }
   return text
@@ -541,7 +549,16 @@ function commandStatus(shelf, project, rest) {
     throw new Error("use: decision-shelf supersede <old> <new> — so the successor gets linked");
   }
   const recordPath = resolveRecord(shelf, project, query, "status <record> <status>");
-  writeFileSync(recordPath, statusTransforms(readFileSync(recordPath, "utf8"), status, recordPath));
+  const text = readFileSync(recordPath, "utf8");
+  // Leaving superseded would strand the successor link as stale metadata,
+  // and commandSupersede could never repair the lifecycle afterwards — so
+  // the transition is refused rather than partially rewritten.
+  if (/data-status="superseded"/.test(text)) {
+    throw new Error(
+      `record is superseded — create a new record instead, or edit it by hand:\n${recordPath}`,
+    );
+  }
+  writeFileSync(recordPath, statusTransforms(text, status, recordPath));
   console.log(`${status}: ${recordPath}`);
 }
 
