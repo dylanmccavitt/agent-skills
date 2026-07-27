@@ -9,7 +9,7 @@ Turn an open direction into a decision the user actually saw, shaped, and chose.
 
 ## Work visually
 
-Prefer showing over telling. When a concrete artifact would sharpen the choice, build the smallest disposable one: an HTML mockup for look and feel, a rough interactive model for logic, or two to three structurally different variants for UI — same content and journey, different structure, not different colors. Keep prototypes in a clearly named disposable lane, never on the production path, and keep one command or URL to view each variant.
+Prefer showing over telling. When a concrete artifact would sharpen the choice, build the smallest disposable one, and default to HTML even when the decision isn't visual: a mockup for look and feel, a rough interactive model for logic, or a side-by-side breakdown of an API shape, schema, or architecture carrying real example code and numbers. For UI, show two to three structurally different variants — same content and journey, different structure, not different colors. Keep prototypes in a clearly named disposable lane, never on the production path, and keep one command or URL to view each variant.
 
 ## Ask one question at a time
 

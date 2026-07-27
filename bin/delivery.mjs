@@ -8,7 +8,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const HELP = `delivery — checks and receipts for evidence-first delivery
@@ -27,6 +27,10 @@ Checks are discovered, not configured: package.json scripts (test, lint,
 typecheck, check), Makefile targets (test, lint, check), Cargo.toml, go.mod.
 Every discovered check is reported as pass, fail, or blocked — a skipped
 check is stated, not hidden.
+
+Stray context files (plan.md, notes.md, handoff.md, todo.md) are flagged as
+advisories, never failures: durable context belongs in the issue, the PR, the
+decision shelf, or agent memory — not in the repository.
 
 Receipts follow the relay receipt shape: outcome, where, evidence at head,
 skipped or blocked, open questions, next action. The tool fills what live
@@ -254,6 +258,20 @@ function printCheckResults(results) {
   }
 }
 
+// Cairn's promise — no plan.md/handoff.md scattered through repositories —
+// only has teeth if something looks. Tracked and untracked files both count;
+// ignored files are the author's business. Advisory only: stray context never
+// fails the gate.
+const STRAY_CONTEXT_NAMES = new Set(["plan.md", "notes.md", "handoff.md", "todo.md"]);
+
+export function strayContextFiles(cwd = process.cwd()) {
+  const listed = git(["ls-files", "--cached", "--others", "--exclude-standard"], cwd);
+  if (!listed) return [];
+  return listed
+    .split("\n")
+    .filter((path) => STRAY_CONTEXT_NAMES.has(basename(path).toLowerCase()));
+}
+
 function commandChecks(cwd, listOnly) {
   const checks = discoverChecks(cwd);
   if (checks.length === 0) {
@@ -327,6 +345,11 @@ function commandChecks(cwd, listOnly) {
     process.exitCode = 1;
   } else {
     console.log(`at head ${head}`);
+  }
+  for (const stray of strayContextFiles(cwd)) {
+    console.log(
+      `advisory: stray context file ${stray} — fold it into its home (issue, PR, shelf, memory) and remove it`,
+    );
   }
   if (results.some((result) => result.status !== "pass")) process.exitCode = 1;
 }

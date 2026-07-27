@@ -18,6 +18,7 @@ import {
   discoverChecks,
   runChecks,
   stateFingerprint,
+  strayContextFiles,
 } from "../bin/delivery.mjs";
 import {
   extractBridgeCriteria,
@@ -112,6 +113,34 @@ test("checks report pass and fail honestly", () => {
   assert.equal(cli.status, 1);
   assert.match(cli.stdout, /pass\s+npm test/);
   assert.match(cli.stdout, /fail\s+npm run lint/);
+});
+
+test("checks flag stray context files as advisories without failing the gate", () => {
+  const { repo, git } = gitRepo();
+  writeFileSync(
+    join(repo, "package.json"),
+    JSON.stringify({ scripts: { test: 'node -e "process.exit(0)"' } }),
+  );
+  writeFileSync(join(repo, "plan.md"), "stray\n");
+  mkdirSync(join(repo, "docs"));
+  writeFileSync(join(repo, "docs", "HANDOFF.md"), "stray, any case, any depth\n");
+  writeFileSync(join(repo, "architecture.md"), "not a stray context name\n");
+  git("add", ".");
+  git("commit", "-m", "add checks and strays");
+
+  const cli = spawnSync(process.execPath, [deliveryCli, "checks"], {
+    cwd: repo,
+    encoding: "utf8",
+  });
+  assert.equal(cli.status, 0, cli.stdout + cli.stderr);
+  assert.match(cli.stdout, /advisory: stray context file plan\.md/);
+  assert.match(cli.stdout, /advisory: stray context file docs\/HANDOFF\.md/);
+  assert.doesNotMatch(cli.stdout, /architecture\.md/);
+
+  // Untracked strays count too; ignored files are the author's business.
+  writeFileSync(join(repo, "notes.md"), "untracked stray\n");
+  writeFileSync(join(repo, ".gitignore"), "notes.md\n");
+  assert.deepEqual(strayContextFiles(repo), ["docs/HANDOFF.md", "plan.md"]);
 });
 
 test("a repo without documented checks fails the checks gate", () => {
