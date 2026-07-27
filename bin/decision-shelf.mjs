@@ -149,13 +149,19 @@ const LANE_MARKER = ".decision-shelf-lane";
 
 // A marker only proves ownership when it is a regular file whose contents
 // name this exact record — a lane moved or copied from another record, or a
-// symlinked or malformed marker, proves nothing and is refused.
+// symlinked or malformed marker, proves nothing and is refused. The stored
+// identity is project-qualified: two projects can hold records with the
+// same date and slug, and a lane moved across them must not pass.
+function laneRecordId(recordPath) {
+  return `${basename(dirname(recordPath))}/${basename(recordPath)}`;
+}
+
 function laneMarkerValid(lane, recordPath) {
   try {
     if (!lstatSync(join(lane, LANE_MARKER)).isFile()) return false;
     const marker = JSON.parse(readFileSync(join(lane, LANE_MARKER), "utf8"));
     return (
-      marker.owner === "decision-shelf proto" && marker.record === basename(recordPath)
+      marker.owner === "decision-shelf proto" && marker.record === laneRecordId(recordPath)
     );
   } catch {
     return false;
@@ -726,7 +732,7 @@ function commandProto(shelf, project, rest) {
       mkdirSync(lane, { recursive: true });
       writeFileSync(
         join(lane, LANE_MARKER),
-        `${JSON.stringify({ record: basename(recordPath), owner: "decision-shelf proto" })}\n`,
+        `${JSON.stringify({ record: laneRecordId(recordPath), owner: "decision-shelf proto" })}\n`,
         { flag: "wx" },
       );
     }
@@ -776,31 +782,42 @@ function commandProto(shelf, project, rest) {
     }
     requireOwned();
     const directory = join(lane, variantArg);
-    if (!existsSync(directory)) {
+    // Only a real variant directory can be promoted — a plain file or a
+    // symlink at that path is not something view would ever list.
+    let variantStat = null;
+    try {
+      variantStat = lstatSync(directory);
+    } catch {
+      variantStat = null;
+    }
+    if (!variantStat || variantStat.isSymbolicLink() || !variantStat.isDirectory()) {
       throw new Error(
         `no variant "${variantArg}" in the lane (see: decision-shelf proto <record> view)`,
       );
     }
     // One read, full preflight, one write: a record missing any field the
-    // promotion touches is refused, never partially rewritten. The evidence
-    // row goes into the comparison section's own table — a bare </tbody>
-    // match could belong to a hand-added table elsewhere.
+    // promotion touches is refused, never partially rewritten. Each field
+    // is validated and patched inside its owning section — the evidence row
+    // in the comparison table, the Prototype field in the Bridge, the
+    // visible date in the header — so a duplicate label elsewhere neither
+    // satisfies the preflight nor receives the mutation.
     const text = readFileSync(recordPath, "utf8");
     const comparison = text.match(
       /<section aria-labelledby="comparison">[\s\S]*?<\/section>/,
     );
-    const required = [
-      /<dt>Prototype<\/dt><dd>[\s\S]*?<\/dd>/,
-      /data-updated="[^"]*"/,
-      /<dt>Updated<\/dt><dd>[^<]*<\/dd>/,
-    ];
+    const bridge = text.match(/<section aria-labelledby="bridge">[\s\S]*?<\/section>/);
+    const headerText = text.match(/<header>[\s\S]*?<\/header>/)?.[0];
     if (
       !comparison ||
       !comparison[0].includes("</tbody>") ||
-      !required.every((pattern) => pattern.test(text))
+      !bridge ||
+      !/<dt>Prototype<\/dt><dd>[\s\S]*?<\/dd>/.test(bridge[0]) ||
+      !headerText ||
+      !/<dt>Updated<\/dt><dd>[^<]*<\/dd>/.test(headerText) ||
+      !/data-updated="[^"]*"/.test(text)
     ) {
       throw new Error(
-        `record is missing expected structure (Prototype field, Options and evidence table, data-updated, Updated row) — edit it by hand:\n${recordPath}`,
+        `record is missing expected structure (Bridge Prototype field, Options and evidence table, data-updated, header Updated row) — edit it by hand:\n${recordPath}`,
       );
     }
     const today = new Date().toISOString().slice(0, 10);
@@ -809,13 +826,21 @@ function commandProto(shelf, project, rest) {
       `          <tr><td>Prototype: ${variantArg}</td><td>${relative}</td>` +
       `<td>${today}</td><td>Promoted surviving variant from the proto lane</td></tr>\n        </tbody>`;
     const patchedComparison = comparison[0].replace(/(\s*)<\/tbody>/, `\n${row}`);
+    const patchedBridge = bridge[0].replace(
+      /(<dt>Prototype<\/dt><dd>)[\s\S]*?(<\/dd>)/,
+      `$1${relative}$2`,
+    );
+    const patchedHeader = headerText.replace(
+      /(<dt>Updated<\/dt><dd>)[^<]*(<\/dd>)/,
+      `$1${today}$2`,
+    );
     writeFileSync(
       recordPath,
       text
         .replace(comparison[0], () => patchedComparison)
-        .replace(/(<dt>Prototype<\/dt><dd>)[\s\S]*?(<\/dd>)/, `$1${relative}$2`)
-        .replace(/data-updated="[^"]*"/, `data-updated="${today}"`)
-        .replace(/(<dt>Updated<\/dt><dd>)[^<]*(<\/dd>)/, `$1${today}$2`),
+        .replace(bridge[0], () => patchedBridge)
+        .replace(headerText, () => patchedHeader)
+        .replace(/data-updated="[^"]*"/, `data-updated="${today}"`),
     );
     console.log(`promoted: ${variantArg}`);
     console.log(`record updated: ${recordPath}`);
