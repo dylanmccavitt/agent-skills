@@ -30,17 +30,28 @@ says. Never mirror records into the repository as markdown files.
 
 Usage:
   decision-shelf path                Print the shelf and current project folder
-  decision-shelf list [--all]       List records, newest first, superseded last (--all: every project)
+  decision-shelf list [--all] [--stale]
+                                     List records, newest first, superseded last
+                                     (--all: every project; --stale: only records
+                                     needing attention)
   decision-shelf new "<question>"   Create a record for one decision, print its path
+  decision-shelf status <record> <status>
+                                     Set a record's status (updates the chip,
+                                     data-status, and updated date together)
+  decision-shelf supersede <old> <new>
+                                     Mark <old> superseded and link its successor
   decision-shelf find <text>         Find records matching text in name or content
   decision-shelf bridge <record>     Turn a record's acceptance criteria into failing tests
   decision-shelf help                Show this help
 
-Statuses (set via data-status and the visible status chip inside the record):
+Statuses (set with \`status\`; \`supersede\` is the only way to set superseded):
   exploring   research, comparison, and prototypes only
   selected    a direction is chosen; prepare implementation, do not implement
   rejected    kept so the same exploration is not repeated
-  superseded  replaced by a newer record; link the successor
+  superseded  replaced by a newer record; the successor is linked
+
+A record is stale when it is exploring or selected with no update in 30 days,
+or superseded without a successor link. Rejected records are never stale.
 
 Conventions:
   - One record per decision, named YYYY-MM-DD-<slug>.html.
@@ -98,7 +109,24 @@ function recordSummary(path) {
   const status = text.match(/data-status="([^"]*)"/)?.[1] || "unknown";
   const updated = text.match(/data-updated="([^"]*)"/)?.[1] || "";
   const title = text.match(/<h1>([^<]*)<\/h1>/)?.[1] || basename(path);
-  return { status, updated, title };
+  const linked = /<dt>Superseded by<\/dt>/.test(text);
+  return { status, updated, title, linked };
+}
+
+const STALE_AFTER_DAYS = 30;
+
+// A record needs attention when its status promises activity that stopped,
+// or promises a successor that was never linked. Rejected records are
+// archival and never stale.
+export function staleReason(summary, now = new Date()) {
+  const { status, updated, linked } = summary;
+  if (status === "superseded") {
+    return linked ? null : "superseded without a successor link";
+  }
+  if (status !== "exploring" && status !== "selected") return null;
+  const age = Math.floor((now - new Date(updated)) / 86_400_000);
+  if (!updated || Number.isNaN(age)) return "no readable data-updated date";
+  return age > STALE_AFTER_DAYS ? `${status} with no update in ${age} days` : null;
 }
 
 function listRecords(directory) {
@@ -119,10 +147,11 @@ function slugify(text) {
   );
 }
 
-function printRecord(path, summary = recordSummary(path)) {
+function printRecord(path, summary = recordSummary(path), reason = "") {
   const { status, updated, title } = summary;
   console.log(`${status.padEnd(11)} ${updated.padEnd(10)} ${title}`);
   console.log(`            ${path}`);
+  if (reason) console.log(`            stale: ${reason}`);
 }
 
 function commandPath(shelf, project) {
@@ -130,7 +159,7 @@ function commandPath(shelf, project) {
   console.log(`Project: ${join(shelf, project)}`);
 }
 
-function commandList(shelf, project, all) {
+function commandList(shelf, project, { all = false, stale = false } = {}) {
   const projects = all
     ? (existsSync(shelf)
         ? readdirSync(shelf, { withFileTypes: true })
@@ -141,7 +170,11 @@ function commandList(shelf, project, all) {
   let total = 0;
   for (const name of projects) {
     const records = listRecords(join(shelf, name))
-      .map((path) => ({ path, summary: recordSummary(path) }))
+      .map((path) => {
+        const summary = recordSummary(path);
+        return { path, summary, reason: staleReason(summary) };
+      })
+      .filter((record) => !stale || record.reason)
       .sort(
         (a, b) =>
           (a.summary.status === "superseded") - (b.summary.status === "superseded") ||
@@ -150,14 +183,18 @@ function commandList(shelf, project, all) {
       );
     if (records.length === 0) continue;
     console.log(`${name}:`);
-    for (const record of records) printRecord(record.path, record.summary);
+    for (const record of records) {
+      printRecord(record.path, record.summary, stale ? record.reason : "");
+    }
     total += records.length;
   }
   if (total === 0) {
     console.log(
-      all
-        ? `No records on the shelf: ${shelf}`
-        : `No records for this project. Create one with: decision-shelf new "<question>"`,
+      stale
+        ? "No stale records — every record is either current, rejected, or superseded with a successor."
+        : all
+          ? `No records on the shelf: ${shelf}`
+          : `No records for this project. Create one with: decision-shelf new "<question>"`,
     );
   }
 }
@@ -455,24 +492,85 @@ export function scaffoldBridgeTests(recordPath, criteria, cwd = process.cwd()) {
   return testPath;
 }
 
-function commandBridge(shelf, project, query, cwd = process.cwd()) {
-  if (!query) throw new Error("provide a record path or name: bridge <record>");
-  let recordPath;
-  if (query.endsWith(".html") && existsSync(query)) {
-    recordPath = resolve(query);
-  } else {
-    const needle = query.toLowerCase();
-    const matches = listRecords(join(shelf, project)).filter((path) =>
-      basename(path).toLowerCase().includes(needle),
-    );
-    if (matches.length === 0) {
-      throw new Error(`no record matching "${query}" for this project (see: decision-shelf list)`);
-    }
-    if (matches.length > 1) {
-      throw new Error(`"${query}" matches several records — use a full path:\n${matches.join("\n")}`);
-    }
-    recordPath = matches[0];
+function resolveRecord(shelf, project, query, usage) {
+  if (!query) throw new Error(`provide a record path or name: ${usage}`);
+  if (query.endsWith(".html") && existsSync(query)) return resolve(query);
+  const needle = query.toLowerCase();
+  const matches = listRecords(join(shelf, project)).filter((path) =>
+    basename(path).toLowerCase().includes(needle),
+  );
+  if (matches.length === 0) {
+    throw new Error(`no record matching "${query}" for this project (see: decision-shelf list)`);
   }
+  if (matches.length > 1) {
+    throw new Error(`"${query}" matches several records — use a full path:\n${matches.join("\n")}`);
+  }
+  return matches[0];
+}
+
+// Records are hand-edited HTML, so every pattern a mutation will touch is
+// verified up front; a record missing the expected structure is refused
+// rather than partially rewritten.
+function statusTransforms(text, status, recordPath) {
+  const today = new Date().toISOString().slice(0, 10);
+  const required = [/data-status="[^"]*"/, /<p class="status">[^<]*<\/p>/, /data-updated="[^"]*"/];
+  if (!required.every((pattern) => pattern.test(text))) {
+    throw new Error(
+      `record is missing expected structure (data-status, status chip, data-updated) — edit it by hand:\n${recordPath}`,
+    );
+  }
+  return text
+    .replace(/data-status="[^"]*"/, `data-status="${status}"`)
+    .replace(/(<p class="status">)[^<]*(<\/p>)/, `$1${status}$2`)
+    .replace(/data-updated="[^"]*"/, `data-updated="${today}"`)
+    .replace(/(<dt>Updated<\/dt><dd>)[^<]*(<\/dd>)/, `$1${today}$2`);
+}
+
+function commandStatus(shelf, project, rest) {
+  const status = rest[rest.length - 1];
+  const query = rest.slice(0, -1).join(" ").trim();
+  if (!query || !status) {
+    throw new Error("provide a record and a status: status <record> <status>");
+  }
+  if (!STATUSES.includes(status)) {
+    throw new Error(`unknown status "${status}" (one of: ${STATUSES.join(", ")})`);
+  }
+  if (status === "superseded") {
+    throw new Error("use: decision-shelf supersede <old> <new> — so the successor gets linked");
+  }
+  const recordPath = resolveRecord(shelf, project, query, "status <record> <status>");
+  writeFileSync(recordPath, statusTransforms(readFileSync(recordPath, "utf8"), status, recordPath));
+  console.log(`${status}: ${recordPath}`);
+}
+
+function commandSupersede(shelf, project, rest) {
+  if (rest.length !== 2) {
+    throw new Error("provide both records: supersede <old> <new>");
+  }
+  const usage = "supersede <old> <new>";
+  const oldPath = resolveRecord(shelf, project, rest[0], usage);
+  const newPath = resolveRecord(shelf, project, rest[1], usage);
+  if (oldPath === newPath) throw new Error("a record cannot supersede itself");
+  const text = readFileSync(oldPath, "utf8");
+  if (/<dt>Superseded by<\/dt>/.test(text)) {
+    throw new Error(`already superseded — edit it by hand if the successor changed:\n${oldPath}`);
+  }
+  if (!text.includes("</dl>")) {
+    throw new Error(`record is missing its header list — edit it by hand:\n${oldPath}`);
+  }
+  const successor = recordSummary(newPath);
+  const href = dirname(oldPath) === dirname(newPath) ? basename(newPath) : newPath;
+  const linked = statusTransforms(text, "superseded", oldPath).replace(
+    "</dl>",
+    `  <dt>Superseded by</dt><dd><a href="${href}">${successor.title}</a></dd>\n      </dl>`,
+  );
+  writeFileSync(oldPath, linked);
+  console.log(`superseded: ${oldPath}`);
+  console.log(`by:         ${newPath}`);
+}
+
+function commandBridge(shelf, project, query, cwd = process.cwd()) {
+  const recordPath = resolveRecord(shelf, project, query, "bridge <record>");
   const criteria = extractBridgeCriteria(readFileSync(recordPath, "utf8"));
   if (criteria.length === 0) {
     throw new Error(
@@ -523,8 +621,14 @@ function main() {
   const shelf = resolveShelf();
   const project = projectFolder();
   if (command === "path") commandPath(shelf, project);
-  else if (command === "list") commandList(shelf, project, rest.includes("--all"));
+  else if (command === "list")
+    commandList(shelf, project, {
+      all: rest.includes("--all"),
+      stale: rest.includes("--stale"),
+    });
   else if (command === "new") commandNew(shelf, project, rest.join(" ").trim());
+  else if (command === "status") commandStatus(shelf, project, rest);
+  else if (command === "supersede") commandSupersede(shelf, project, rest);
   else if (command === "find") commandFind(shelf, rest.join(" ").trim());
   else if (command === "bridge") commandBridge(shelf, project, rest.join(" ").trim());
   else throw new Error(`unknown command: ${command} (try: decision-shelf help)`);

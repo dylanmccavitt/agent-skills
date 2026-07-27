@@ -33,6 +33,7 @@ test("compass keeps the visual-first interactive decision loop", () => {
   const compass = readFileSync(resolve(root, "compass", "SKILL.md"), "utf8");
   assert.match(compass, /showing over telling/i);
   assert.match(compass, /disposable/i);
+  assert.match(compass, /even when the decision isn't visual/i);
   assert.match(compass, /one question at a time/i);
   assert.match(compass, /request_user_input/);
   assert.match(compass, /decision-shelf/);
@@ -131,5 +132,93 @@ test("decision-shelf CLI creates, lists, and refuses duplicate records", () => {
     ordered.stdout.indexOf("Choose a cache strategy") <
       ordered.stdout.indexOf("Pick a queue library"),
     "superseded records list last even with a newer updated date",
+  );
+});
+
+test("decision-shelf status, supersede, and --stale manage the record lifecycle", () => {
+  const cli = resolve(root, "bin", "decision-shelf.mjs");
+  const shelf = mkdtempSync(join(tmpdir(), "decision-shelf-lifecycle-"));
+  const workspace = mkdtempSync(join(tmpdir(), "decision-shelf-repo-"));
+  mkdirSync(join(workspace, "project"), { recursive: true });
+  const env = { ...process.env, DECISION_SHELF_HOME: shelf };
+  const run = (args) =>
+    spawnSync(process.execPath, [cli, ...args], {
+      cwd: join(workspace, "project"),
+      env,
+      encoding: "utf8",
+    });
+
+  const first = run(["new", "Pick a storage engine"]).stdout.trim();
+  const second = run(["new", "Revisit the storage engine"]).stdout.trim();
+
+  // status updates the chip, data-status, and dates together.
+  const selected = run(["status", "storage-engine", "selected"]);
+  assert.notEqual(selected.status, 0, "ambiguous name must refuse, not guess");
+  assert.match(selected.stderr, /matches several records/);
+  const byPath = run(["status", first, "selected"]);
+  assert.equal(byPath.status, 0, byPath.stderr);
+  const afterStatus = readFileSync(first, "utf8");
+  assert.match(afterStatus, /data-status="selected"/);
+  assert.match(afterStatus, /<p class="status">selected<\/p>/);
+
+  const invalid = run(["status", first, "shipped"]);
+  assert.notEqual(invalid.status, 0);
+  assert.match(invalid.stderr, /unknown status/);
+
+  // superseded is only reachable through supersede, so a successor is linked.
+  const blocked = run(["status", first, "superseded"]);
+  assert.notEqual(blocked.status, 0);
+  assert.match(blocked.stderr, /supersede <old> <new>/);
+
+  const superseded = run(["supersede", first, second]);
+  assert.equal(superseded.status, 0, superseded.stderr);
+  const afterSupersede = readFileSync(first, "utf8");
+  assert.match(afterSupersede, /data-status="superseded"/);
+  assert.match(afterSupersede, /<dt>Superseded by<\/dt>/);
+  assert.ok(
+    afterSupersede.includes("Revisit the storage engine"),
+    "the successor link carries the successor's title",
+  );
+  const again = run(["supersede", first, second]);
+  assert.notEqual(again.status, 0);
+  assert.match(again.stderr, /already superseded/);
+
+  // A hand-mangled record is refused, not partially rewritten.
+  const mangledPath = run(["new", "Choose a metrics stack"]).stdout.trim();
+  const pristine = readFileSync(mangledPath, "utf8");
+  writeFileSync(mangledPath, pristine.replace(/data-status="[^"]*"\s*/, ""));
+  const mangled = run(["status", mangledPath, "selected"]);
+  assert.notEqual(mangled.status, 0);
+  assert.match(mangled.stderr, /missing expected structure/);
+  writeFileSync(mangledPath, pristine);
+
+  // --stale surfaces stalled and unlinked records, and only those.
+  const freshStale = run(["list", "--stale"]);
+  assert.equal(freshStale.status, 0, freshStale.stderr);
+  assert.match(freshStale.stdout, /No stale records/);
+
+  writeFileSync(
+    mangledPath,
+    readFileSync(mangledPath, "utf8").replace(
+      /data-updated="[^"]*"/,
+      'data-updated="2001-01-01"',
+    ),
+  );
+  writeFileSync(
+    second,
+    readFileSync(second, "utf8").replace(
+      'data-status="exploring"',
+      'data-status="superseded"',
+    ),
+  );
+  const stale = run(["list", "--stale"]);
+  assert.equal(stale.status, 0, stale.stderr);
+  assert.match(stale.stdout, /Choose a metrics stack/);
+  assert.match(stale.stdout, /no update in \d+ days/);
+  assert.match(stale.stdout, /superseded without a successor link/);
+  assert.doesNotMatch(
+    stale.stdout,
+    /Pick a storage engine/,
+    "superseded with a successor link is not stale",
   );
 });
