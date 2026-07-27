@@ -135,6 +135,40 @@ test("decision-shelf CLI creates, lists, and refuses duplicate records", () => {
   );
 });
 
+test("decision-shelf new fills only CLI slots and leaves hand-edit placeholders intact", () => {
+  const cli = resolve(root, "bin", "decision-shelf.mjs");
+  const shelf = mkdtempSync(join(tmpdir(), "decision-shelf-template-"));
+  const workspace = mkdtempSync(join(tmpdir(), "decision-shelf-repo-"));
+  mkdirSync(join(workspace, "project"), { recursive: true });
+  const question = "Adopt titles for records";
+  const created = spawnSync(process.execPath, [cli, "new", question], {
+    cwd: join(workspace, "project"),
+    env: { ...process.env, DECISION_SHELF_HOME: shelf },
+    encoding: "utf8",
+  });
+  assert.equal(created.status, 0, created.stderr);
+  const record = readFileSync(created.stdout.trim(), "utf8");
+
+  // Every CLI-filled slot is substituted; no template token survives.
+  assert.doesNotMatch(record, /\{\{[A-Z_]+\}\}/);
+  assert.match(record, /<title>Decision: Adopt titles for records<\/title>/);
+  assert.match(record, /<h1>Adopt titles for records<\/h1>/);
+  assert.match(record, /<p>Adopt titles for records<\/p>/);
+  const today = new Date().toISOString().slice(0, 10);
+  assert.match(record, new RegExp(`data-updated="${today}"`));
+  assert.match(record, new RegExp(`<dt>Updated</dt><dd>${today}</dd>`));
+
+  // Hand-edit placeholders survive verbatim. Bare-string replacements once
+  // bled the question into "TITLES OR NONE" (making "<question>S OR NONE"),
+  // rewrote "NONE OR GIT SHA", and stamped today into the evidence table's
+  // Verified cell.
+  assert.match(record, /<dt>Issue candidates<\/dt><dd>TITLES OR NONE<\/dd>/);
+  assert.match(record, /<dt>Delivered head<\/dt><dd>NONE OR GIT SHA<\/dd>/);
+  assert.match(record, /<td>YYYY-MM-DD<\/td>/);
+  assert.match(record, /<dt>Last verified<\/dt><dd>UNVERIFIED<\/dd>/);
+  assert.doesNotMatch(record, /Adopt titles for recordsS/);
+});
+
 test("decision-shelf status, supersede, and --stale manage the record lifecycle", () => {
   const cli = resolve(root, "bin", "decision-shelf.mjs");
   const shelf = mkdtempSync(join(tmpdir(), "decision-shelf-lifecycle-"));
