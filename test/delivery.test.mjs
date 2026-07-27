@@ -141,6 +141,9 @@ test("checks flag stray context files as advisories without failing the gate", (
   writeFileSync(join(repo, "notes.md"), "untracked stray\n");
   writeFileSync(join(repo, ".gitignore"), "notes.md\n");
   assert.deepEqual(strayContextFiles(repo), ["docs/HANDOFF.md", "plan.md"]);
+
+  // The scan is repository-wide from any depth, not a cwd subtree.
+  assert.deepEqual(strayContextFiles(join(repo, "docs")), ["docs/HANDOFF.md", "plan.md"]);
 });
 
 test("a repo without documented checks fails the checks gate", () => {
@@ -151,6 +154,19 @@ test("a repo without documented checks fails the checks gate", () => {
   });
   assert.equal(cli.status, 1);
   assert.match(cli.stdout, /No documented checks discovered/);
+
+  // Stray-context advisories do not depend on check discovery.
+  const { repo, git } = gitRepo();
+  writeFileSync(join(repo, "plan.md"), "stray\n");
+  git("add", ".");
+  git("commit", "-m", "stray without checks");
+  const stray = spawnSync(process.execPath, [deliveryCli, "checks"], {
+    cwd: repo,
+    encoding: "utf8",
+  });
+  assert.equal(stray.status, 1);
+  assert.match(stray.stdout, /No documented checks discovered/);
+  assert.match(stray.stdout, /advisory: stray context file plan\.md/);
 });
 
 test("passing checks without a git head still fail the gate", () => {

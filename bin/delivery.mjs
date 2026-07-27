@@ -265,17 +265,31 @@ function printCheckResults(results) {
 const STRAY_CONTEXT_NAMES = new Set(["plan.md", "notes.md", "handoff.md", "todo.md"]);
 
 export function strayContextFiles(cwd = process.cwd()) {
-  const listed = git(["ls-files", "--cached", "--others", "--exclude-standard"], cwd);
+  // The promise is repository-wide, and ls-files in a subdirectory lists
+  // only that subtree — so scan from the repository top level.
+  const worktree = git(["rev-parse", "--show-toplevel"], cwd) || cwd;
+  const listed = git(["ls-files", "--cached", "--others", "--exclude-standard"], worktree);
   if (!listed) return [];
   return listed
     .split("\n")
     .filter((path) => STRAY_CONTEXT_NAMES.has(basename(path).toLowerCase()));
 }
 
+function printStrayAdvisories(cwd) {
+  for (const stray of strayContextFiles(cwd)) {
+    console.log(
+      `advisory: stray context file ${stray} — fold it into its home (issue, PR, shelf, memory) and remove it`,
+    );
+  }
+}
+
 function commandChecks(cwd, listOnly) {
   const checks = discoverChecks(cwd);
   if (checks.length === 0) {
     console.log("No documented checks discovered (package.json scripts, Makefile, Cargo.toml, go.mod).");
+    // Advisories are independent of check discovery: a repo with no checks
+    // can still be littered with stray context files.
+    printStrayAdvisories(cwd);
     process.exitCode = 1;
     return;
   }
@@ -346,11 +360,7 @@ function commandChecks(cwd, listOnly) {
   } else {
     console.log(`at head ${head}`);
   }
-  for (const stray of strayContextFiles(cwd)) {
-    console.log(
-      `advisory: stray context file ${stray} — fold it into its home (issue, PR, shelf, memory) and remove it`,
-    );
-  }
+  printStrayAdvisories(cwd);
   if (results.some((result) => result.status !== "pass")) process.exitCode = 1;
 }
 
