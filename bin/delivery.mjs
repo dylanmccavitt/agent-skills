@@ -172,15 +172,18 @@ function worktreeFingerprint(worktree) {
 // nested`), so the index is the only complete source. Null when it cannot
 // be read: callers fail closed.
 function gitlinkPaths(worktree) {
+  // NUL-delimited (-z): with the default core.quotePath, a non-ASCII
+  // submodule path comes back C-style-quoted on newline output and its
+  // .git existence check would always miss.
   try {
-    return execFileSync("git", ["ls-files", "-s"], {
+    return execFileSync("git", ["ls-files", "-s", "-z"], {
       cwd: worktree,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
     })
-      .split("\n")
-      .filter((line) => line.startsWith("160000 "))
-      .map((line) => line.split("\t").slice(1).join("\t"))
+      .split("\0")
+      .filter((entry) => entry.startsWith("160000 "))
+      .map((entry) => entry.split("\t").slice(1).join("\t"))
       .filter(Boolean);
   } catch {
     return null;

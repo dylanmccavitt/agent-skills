@@ -1030,3 +1030,21 @@ test("the stray scan reads non-ASCII paths verbatim", () => {
   git("commit", "-m", "non-ascii stray");
   assert.deepEqual(strayContextFiles(repo), ["café/plan.md"]);
 });
+
+test("the stray scan reaches submodules at non-ASCII paths", () => {
+  const sub = gitRepo();
+  writeFileSync(join(sub.repo, "todo.md"), "stray in quoted-path submodule\n");
+  sub.git("add", ".");
+  sub.git("commit", "-m", "sub stray");
+
+  const superRepo = gitRepo();
+  execFileSync(
+    "git",
+    ["-c", "protocol.file.allow=always", "submodule", "add", sub.repo, "café-sm"],
+    { cwd: superRepo.repo, encoding: "utf8" },
+  );
+  superRepo.git("add", ".");
+  superRepo.git("commit", "-m", "add quoted-path submodule");
+
+  assert.deepEqual(strayContextFiles(superRepo.repo), ["café-sm/todo.md"]);
+});

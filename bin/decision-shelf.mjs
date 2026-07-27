@@ -114,9 +114,13 @@ function recordSummary(path) {
   // row misplaced outside the header, still leaves the record stale.
   const header = text.match(/<header>[\s\S]*?<\/header>/)?.[0] || "";
   const successor = header.match(/<dt>Superseded by<\/dt>\s*<dd>([\s\S]*?)<\/dd>/);
-  const linked = Boolean(successor && /<a\s[^>]*href="[^"]+"/.test(successor[1]));
+  const linked = Boolean(successor && SUCCESSOR_ANCHOR.test(successor[1]));
   return { status, updated, title, linked };
 }
+
+// Records are hand-edited semantic HTML: both valid attribute quoting forms
+// count as a successor anchor.
+const SUCCESSOR_ANCHOR = /<a\s[^>]*href\s*=\s*("[^"]+"|'[^']+')/;
 
 const STALE_AFTER_DAYS = 30;
 
@@ -520,22 +524,33 @@ function resolveRecord(shelf, project, query, usage) {
 // rather than partially rewritten.
 function statusTransforms(text, status, recordPath) {
   const today = new Date().toISOString().slice(0, 10);
+  // The visible Updated row is validated and replaced within the header
+  // specifically — a duplicate row in another list must neither satisfy
+  // the preflight nor receive the mutation.
+  const headerText = text.match(/<header>[\s\S]*?<\/header>/)?.[0];
   const required = [
     /data-status="[^"]*"/,
     /<p class="status">[^<]*<\/p>/,
     /data-updated="[^"]*"/,
-    /<dt>Updated<\/dt><dd>[^<]*<\/dd>/,
   ];
-  if (!required.every((pattern) => pattern.test(text))) {
+  if (
+    !headerText ||
+    !/<dt>Updated<\/dt><dd>[^<]*<\/dd>/.test(headerText) ||
+    !required.every((pattern) => pattern.test(text))
+  ) {
     throw new Error(
-      `record is missing expected structure (data-status, status chip, data-updated, Updated row) — edit it by hand:\n${recordPath}`,
+      `record is missing expected structure (data-status, status chip, data-updated, header Updated row) — edit it by hand:\n${recordPath}`,
     );
   }
+  const patchedHeader = headerText.replace(
+    /(<dt>Updated<\/dt><dd>)[^<]*(<\/dd>)/,
+    `$1${today}$2`,
+  );
   return text
+    .replace(headerText, () => patchedHeader)
     .replace(/data-status="[^"]*"/, `data-status="${status}"`)
     .replace(/(<p class="status">)[^<]*(<\/p>)/, `$1${status}$2`)
-    .replace(/data-updated="[^"]*"/, `data-updated="${today}"`)
-    .replace(/(<dt>Updated<\/dt><dd>)[^<]*(<\/dd>)/, `$1${today}$2`);
+    .replace(/data-updated="[^"]*"/, `data-updated="${today}"`);
 }
 
 function commandStatus(shelf, project, rest) {
@@ -590,7 +605,7 @@ function commandSupersede(shelf, project, rest) {
   // with an empty or plain-text value is exactly the malformed state that
   // list --stale reports, so supersede repairs that row in place — refusing
   // it would leave the CLI unable to fix the condition it diagnoses.
-  if (existing && /<a\s[^>]*href="[^"]+"/.test(existing[1])) {
+  if (existing && SUCCESSOR_ANCHOR.test(existing[1])) {
     throw new Error(`already superseded — edit it by hand if the successor changed:\n${oldPath}`);
   }
   if (!headerText || (!existing && !headerText.includes("</dl>"))) {
