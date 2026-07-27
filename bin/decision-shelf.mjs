@@ -571,7 +571,12 @@ function commandSupersede(shelf, project, rest) {
   const newPath = resolveRecord(shelf, project, rest[1], usage);
   if (oldPath === newPath) throw new Error("a record cannot supersede itself");
   const text = readFileSync(oldPath, "utf8");
-  if (/<dt>Superseded by<\/dt>/.test(text)) {
+  // Only a valid successor anchor means "already superseded". A field label
+  // with an empty or plain-text value is exactly the malformed state that
+  // list --stale reports, so supersede repairs that row in place — refusing
+  // it would leave the CLI unable to fix the condition it diagnoses.
+  const existing = text.match(/<dt>Superseded by<\/dt>\s*<dd>([\s\S]*?)<\/dd>/);
+  if (existing && /<a\s[^>]*href="[^"]+"/.test(existing[1])) {
     throw new Error(`already superseded — edit it by hand if the successor changed:\n${oldPath}`);
   }
   if (!text.includes("</dl>")) {
@@ -579,10 +584,17 @@ function commandSupersede(shelf, project, rest) {
   }
   const successor = recordSummary(newPath);
   const href = dirname(oldPath) === dirname(newPath) ? basename(newPath) : newPath;
-  const linked = statusTransforms(text, "superseded", oldPath).replace(
-    "</dl>",
-    `  <dt>Superseded by</dt><dd><a href="${href}">${successor.title}</a></dd>\n      </dl>`,
-  );
+  const anchor = `<a href="${href}">${successor.title}</a>`;
+  const transformed = statusTransforms(text, "superseded", oldPath);
+  const linked = existing
+    ? transformed.replace(
+        /<dt>Superseded by<\/dt>\s*<dd>[\s\S]*?<\/dd>/,
+        () => `<dt>Superseded by</dt><dd>${anchor}</dd>`,
+      )
+    : transformed.replace(
+        "</dl>",
+        `  <dt>Superseded by</dt><dd>${anchor}</dd>\n      </dl>`,
+      );
   writeFileSync(oldPath, linked);
   console.log(`superseded: ${oldPath}`);
   console.log(`by:         ${newPath}`);

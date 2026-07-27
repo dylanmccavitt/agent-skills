@@ -322,3 +322,46 @@ test("decision-shelf status, supersede, and --stale manage the record lifecycle"
     "superseded with a successor link is not stale",
   );
 });
+
+test("supersede repairs a label-only successor field instead of refusing it", () => {
+  const cli = resolve(root, "bin", "decision-shelf.mjs");
+  const shelf = mkdtempSync(join(tmpdir(), "decision-shelf-repair-"));
+  const workspace = mkdtempSync(join(tmpdir(), "decision-shelf-repo-"));
+  mkdirSync(join(workspace, "project"), { recursive: true });
+  const env = { ...process.env, DECISION_SHELF_HOME: shelf };
+  const run = (args) =>
+    spawnSync(process.execPath, [cli, ...args], {
+      cwd: join(workspace, "project"),
+      env,
+      encoding: "utf8",
+    });
+
+  const old = run(["new", "Choose a queue broker"]).stdout.trim();
+  const successor = run(["new", "Queue broker second pass"]).stdout.trim();
+
+  // Hand-edited malformed state: the label exists but carries no anchor —
+  // exactly what list --stale reports as "superseded without a successor link".
+  writeFileSync(
+    old,
+    readFileSync(old, "utf8")
+      .replace('data-status="exploring"', 'data-status="superseded"')
+      .replace("</dl>", "  <dt>Superseded by</dt><dd>see the other doc</dd>\n      </dl>"),
+  );
+  const staleBefore = run(["list", "--stale"]);
+  assert.match(staleBefore.stdout, /superseded without a successor link/);
+
+  const repaired = run(["supersede", old, successor]);
+  assert.equal(repaired.status, 0, repaired.stderr);
+  const text = readFileSync(old, "utf8");
+  const rows = text.match(/<dt>Superseded by<\/dt>/g) || [];
+  assert.equal(rows.length, 1, "repair replaces the malformed row, never duplicates it");
+  assert.match(text, /<dt>Superseded by<\/dt><dd><a href="[^"]+">Queue broker second pass<\/a><\/dd>/);
+
+  const staleAfter = run(["list", "--stale"]);
+  assert.doesNotMatch(staleAfter.stdout, /superseded without a successor link/);
+
+  // A genuinely linked record still refuses re-supersession.
+  const again = run(["supersede", old, successor]);
+  assert.notEqual(again.status, 0);
+  assert.match(again.stderr, /already superseded/);
+});
