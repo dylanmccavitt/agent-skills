@@ -128,7 +128,7 @@ function recordSummary(path) {
   const header = text.match(/<header>[\s\S]*?<\/header>/)?.[0] || "";
   const successor = header.match(/<dt>Superseded by<\/dt>\s*<dd>([\s\S]*?)<\/dd>/);
   const linked = Boolean(successor && SUCCESSOR_ANCHOR.test(successor[1]));
-  const lane = laneOwned(lanePath(path));
+  const lane = laneOwned(lanePath(path), path);
   return { status, updated, title, linked, lane };
 }
 
@@ -147,9 +147,24 @@ const SUCCESSOR_ANCHOR = /<a\s[^>]*href\s*=\s*("[^"]+"|'[^']+')/;
 // user data the CLI refuses to adopt, mutate, remove, or count as a lane.
 const LANE_MARKER = ".decision-shelf-lane";
 
-function laneOwned(lane) {
+// A marker only proves ownership when it is a regular file whose contents
+// name this exact record — a lane moved or copied from another record, or a
+// symlinked or malformed marker, proves nothing and is refused.
+function laneMarkerValid(lane, recordPath) {
   try {
-    return !lstatSync(lane).isSymbolicLink() && existsSync(join(lane, LANE_MARKER));
+    if (!lstatSync(join(lane, LANE_MARKER)).isFile()) return false;
+    const marker = JSON.parse(readFileSync(join(lane, LANE_MARKER), "utf8"));
+    return (
+      marker.owner === "decision-shelf proto" && marker.record === basename(recordPath)
+    );
+  } catch {
+    return false;
+  }
+}
+
+function laneOwned(lane, recordPath) {
+  try {
+    return !lstatSync(lane).isSymbolicLink() && laneMarkerValid(lane, recordPath);
   } catch {
     return false;
   }
@@ -697,9 +712,9 @@ function commandProto(shelf, project, rest) {
     if (lstatSync(lane).isSymbolicLink()) {
       throw new Error(`lane path is a symlink — refusing to touch it:\n${lane}`);
     }
-    if (!existsSync(join(lane, LANE_MARKER))) {
+    if (!laneMarkerValid(lane, recordPath)) {
       throw new Error(
-        `a directory exists at the lane path but was not created by proto — refusing to touch it:\n${lane}`,
+        `a directory exists at the lane path but was not created by proto for this record — refusing to touch it:\n${lane}`,
       );
     }
   };
@@ -767,17 +782,25 @@ function commandProto(shelf, project, rest) {
       );
     }
     // One read, full preflight, one write: a record missing any field the
-    // promotion touches is refused, never partially rewritten.
+    // promotion touches is refused, never partially rewritten. The evidence
+    // row goes into the comparison section's own table — a bare </tbody>
+    // match could belong to a hand-added table elsewhere.
     const text = readFileSync(recordPath, "utf8");
+    const comparison = text.match(
+      /<section aria-labelledby="comparison">[\s\S]*?<\/section>/,
+    );
     const required = [
       /<dt>Prototype<\/dt><dd>[\s\S]*?<\/dd>/,
-      /<\/tbody>/,
       /data-updated="[^"]*"/,
       /<dt>Updated<\/dt><dd>[^<]*<\/dd>/,
     ];
-    if (!required.every((pattern) => pattern.test(text))) {
+    if (
+      !comparison ||
+      !comparison[0].includes("</tbody>") ||
+      !required.every((pattern) => pattern.test(text))
+    ) {
       throw new Error(
-        `record is missing expected structure (Prototype field, evidence table, data-updated, Updated row) — edit it by hand:\n${recordPath}`,
+        `record is missing expected structure (Prototype field, Options and evidence table, data-updated, Updated row) — edit it by hand:\n${recordPath}`,
       );
     }
     const today = new Date().toISOString().slice(0, 10);
@@ -785,11 +808,12 @@ function commandProto(shelf, project, rest) {
     const row =
       `          <tr><td>Prototype: ${variantArg}</td><td>${relative}</td>` +
       `<td>${today}</td><td>Promoted surviving variant from the proto lane</td></tr>\n        </tbody>`;
+    const patchedComparison = comparison[0].replace(/(\s*)<\/tbody>/, `\n${row}`);
     writeFileSync(
       recordPath,
       text
+        .replace(comparison[0], () => patchedComparison)
         .replace(/(<dt>Prototype<\/dt><dd>)[\s\S]*?(<\/dd>)/, `$1${relative}$2`)
-        .replace(/(\s*)<\/tbody>/, `\n${row}`)
         .replace(/data-updated="[^"]*"/, `data-updated="${today}"`)
         .replace(/(<dt>Updated<\/dt><dd>)[^<]*(<\/dd>)/, `$1${today}$2`),
     );

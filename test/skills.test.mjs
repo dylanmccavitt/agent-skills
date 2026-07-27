@@ -6,6 +6,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  renameSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -566,6 +567,28 @@ test("decision-shelf proto lanes live beside their record and settle with it", (
   const refusedDate = run(["proto", record, "promote", "cursor-based"]);
   assert.notEqual(refusedDate.status, 0, "a missing visible Updated row is refused too");
   assert.match(refusedDate.stderr, /missing expected structure/);
+
+  // Promotion targets the comparison section's table even when an earlier
+  // hand-added table exists.
+  writeFileSync(
+    record,
+    pristine.replace(
+      '<h2 id="constraints">Constraints</h2>',
+      '<h2 id="constraints">Constraints</h2>\n      <table><tbody><tr><td>unrelated</td></tr></tbody></table>',
+    ),
+  );
+  const scoped = run(["proto", record, "promote", "page-numbers"]);
+  assert.equal(scoped.status, 0, scoped.stderr);
+  const scopedText = readFileSync(record, "utf8");
+  assert.ok(
+    scopedText.indexOf("Prototype: page-numbers") > scopedText.indexOf('id="comparison"'),
+    "the evidence row lands in the comparison table",
+  );
+  assert.doesNotMatch(
+    scopedText.slice(0, scopedText.indexOf('id="comparison"')),
+    /Prototype: page-numbers/,
+    "the earlier table gains nothing",
+  );
   writeFileSync(record, pristine);
 
   // A settled record with a lane still present is stale; cleaning resolves it.
@@ -626,6 +649,21 @@ test("proto refuses unmanaged and symlinked lane paths outright", () => {
   run(["status", record, "selected"]);
   const stale = run(["list", "--stale"]);
   assert.doesNotMatch(stale.stdout, /prototype lane still present/);
+
+  // A lane moved or copied from another record fails marker validation:
+  // its marker names the original record, so nothing here owns it.
+  const recordA = run(["new", "Choose a logger"]).stdout.trim();
+  run(["proto", recordA, "new", "v1"]);
+  const recordB = run(["new", "Choose a tracer"]).stdout.trim();
+  const laneB = recordB.replace(/\.html$/, ".proto");
+  renameSync(recordA.replace(/\.html$/, ".proto"), laneB);
+  const moved = run(["proto", recordB, "clean"]);
+  assert.notEqual(moved.status, 0);
+  assert.match(moved.stderr, /not created by proto for this record/);
+  assert.ok(
+    existsSync(join(laneB, "v1", "index.html")),
+    "the moved lane's contents are untouched",
+  );
 
   // A symlinked lane path is refused before any traversal or write.
   const second = run(["new", "Choose a palette"]).stdout.trim();
