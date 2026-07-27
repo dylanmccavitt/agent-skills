@@ -9,5 +9,5 @@ Relay, and Cairn plus the `decision-shelf` and `delivery` CLIs.
 - Installs written by `@dylanmccavitt/skills` are recognized as package-owned
   and upgrade in place; nothing needs to be uninstalled first.
 
-Prior history and release notes live in the archived repository:
-https://github.com/dylanmccavitt/skills
+Prior history and release notes lived in the retired
+`@dylanmccavitt/skills` repository, which has been removed.
