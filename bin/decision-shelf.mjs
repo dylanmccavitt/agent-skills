@@ -218,13 +218,15 @@ function commandNew(shelf, project, question, cwd = process.cwd()) {
     git(["rev-parse", "--show-toplevel"], cwd) ||
     resolve(cwd);
   const head = git(["rev-parse", "HEAD"], cwd) || "UNKNOWN";
+  // The template marks CLI-filled slots with delimited {{TOKEN}} placeholders
+  // so no replacement can collide with the prose placeholders left for hand
+  // editing (TITLES OR NONE, NONE OR GIT SHA, the YYYY-MM-DD evidence cell).
+  // The question is user text, so it is substituted last and never rescanned.
   const record = readFileSync(TEMPLATE, "utf8")
-    .replaceAll("TITLE", question)
-    .replaceAll("ONE DECISION", question)
-    .replaceAll("YYYY-MM-DD OR UNVERIFIED", "UNVERIFIED")
-    .replaceAll("YYYY-MM-DD", today)
-    .replaceAll("REMOTE OR ABSOLUTE PATH", repository)
-    .replaceAll("GIT SHA", head);
+    .replaceAll("{{CREATED}}", today)
+    .replaceAll("{{REPOSITORY}}", repository)
+    .replaceAll("{{BASE_HEAD}}", head)
+    .replaceAll("{{QUESTION}}", question);
   mkdirSync(directory, { recursive: true });
   writeFileSync(path, record, { flag: "wx" });
   console.log(path);

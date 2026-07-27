@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Decision: TITLE</title>
+  <title>Decision: {{QUESTION}}</title>
   <style>
     :root { color-scheme: light dark; font: 16px/1.5 system-ui, sans-serif; }
     body { max-width: 72rem; margin: 0 auto; padding: 2rem; }
@@ -21,19 +21,19 @@
 <body>
   <article
     data-status="exploring"
-    data-updated="YYYY-MM-DD"
-    data-repository="REMOTE OR ABSOLUTE PATH"
-    data-base-head="GIT SHA"
+    data-updated="{{CREATED}}"
+    data-repository="{{REPOSITORY}}"
+    data-base-head="{{BASE_HEAD}}"
     data-implementation-authority="not-authorized"
   >
     <header>
       <p class="status">exploring</p>
-      <h1>TITLE</h1>
+      <h1>{{QUESTION}}</h1>
       <dl>
-        <dt>Updated</dt><dd>YYYY-MM-DD</dd>
-        <dt>Repository</dt><dd>REMOTE OR ABSOLUTE PATH</dd>
-        <dt>Base head</dt><dd>GIT SHA</dd>
-        <dt>Last verified</dt><dd>YYYY-MM-DD OR UNVERIFIED</dd>
+        <dt>Updated</dt><dd>{{CREATED}}</dd>
+        <dt>Repository</dt><dd>{{REPOSITORY}}</dd>
+        <dt>Base head</dt><dd>{{BASE_HEAD}}</dd>
+        <dt>Last verified</dt><dd>UNVERIFIED</dd>
         <dt>Owner</dt><dd>OWNER</dd>
         <dt>Revisit when</dt><dd>TRIGGER</dd>
       </dl>
@@ -41,7 +41,7 @@
 
     <section aria-labelledby="question">
       <h2 id="question">Question</h2>
-      <p>ONE DECISION</p>
+      <p>{{QUESTION}}</p>
     </section>
 
     <section aria-labelledby="constraints">
