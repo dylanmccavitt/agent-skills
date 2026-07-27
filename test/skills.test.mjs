@@ -393,3 +393,42 @@ test("supersede refuses a record whose header list is missing", () => {
   assert.equal(readFileSync(old, "utf8"), mangled, "the record is left untouched");
   assert.doesNotMatch(readFileSync(old, "utf8"), /Superseded by/);
 });
+
+test("supersede refuses a Superseded by row misplaced outside the header", () => {
+  const cli = resolve(root, "bin", "decision-shelf.mjs");
+  const shelf = mkdtempSync(join(tmpdir(), "decision-shelf-misplaced-"));
+  const workspace = mkdtempSync(join(tmpdir(), "decision-shelf-repo-"));
+  mkdirSync(join(workspace, "project"), { recursive: true });
+  const env = { ...process.env, DECISION_SHELF_HOME: shelf };
+  const run = (args) =>
+    spawnSync(process.execPath, [cli, ...args], {
+      cwd: join(workspace, "project"),
+      env,
+      encoding: "utf8",
+    });
+
+  const old = run(["new", "Pick a serializer"]).stdout.trim();
+  const successor = run(["new", "Serializer second pass"]).stdout.trim();
+
+  // A malformed row in the Bridge list, not the header: repairing it there
+  // would leave the header without its successor while flipping the status.
+  const mangled = readFileSync(old, "utf8").replace(
+    "<dt>Prototype</dt>",
+    "<dt>Superseded by</dt><dd>see elsewhere</dd>\n        <dt>Prototype</dt>",
+  );
+  writeFileSync(old, mangled);
+  const refused = run(["supersede", old, successor]);
+  assert.notEqual(refused.status, 0);
+  assert.match(refused.stderr, /outside the record's header/);
+  assert.equal(readFileSync(old, "utf8"), mangled, "the record is left untouched");
+
+  // The misplaced anchor also never counts as linked for staleness.
+  writeFileSync(
+    old,
+    mangled
+      .replace('data-status="exploring"', 'data-status="superseded"')
+      .replace("see elsewhere", '<a href="x.html">x</a>'),
+  );
+  const stale = run(["list", "--stale"]);
+  assert.match(stale.stdout, /superseded without a successor link/);
+});

@@ -1021,3 +1021,12 @@ test("the stray scan recurses into initialized submodules", () => {
 
   assert.deepEqual(strayContextFiles(superRepo.repo), ["notes.md", "sm/plan.md"]);
 });
+
+test("the stray scan reads non-ASCII paths verbatim", () => {
+  const { repo, git } = gitRepo();
+  mkdirSync(join(repo, "café"));
+  writeFileSync(join(repo, "café", "plan.md"), "stray under a quotePath-affected name\n");
+  git("add", ".");
+  git("commit", "-m", "non-ascii stray");
+  assert.deepEqual(strayContextFiles(repo), ["café/plan.md"]);
+});
