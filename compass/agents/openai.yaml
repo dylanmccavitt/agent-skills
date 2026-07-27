@@ -1,0 +1,4 @@
+interface:
+  display_name: "Compass"
+  short_description: "Settle direction visually before implementation"
+  default_prompt: "Use $compass to explore this direction with concrete visuals and one question at a time, then record the decision on the shelf."

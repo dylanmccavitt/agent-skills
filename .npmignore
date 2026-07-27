@@ -1,0 +1,7 @@
+evals/
+test/
+.github/
+scripts/
+**/__pycache__/
+**/*.py[cod]
+.DS_Store

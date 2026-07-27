@@ -1,0 +1,4 @@
+interface:
+  display_name: "Relay"
+  short_description: "Dispatch bounded work and return a clean receipt"
+  default_prompt: "Use $relay to take this task through a bounded brief and return one reviewable receipt."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Cairn"
+  short_description: "Pause and resume work without repo clutter"
+  default_prompt: "Use $cairn to preserve this work's state in its proper home and prepare a clean resume."

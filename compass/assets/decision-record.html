@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Decision: TITLE</title>
+  <style>
+    :root { color-scheme: light dark; font: 16px/1.5 system-ui, sans-serif; }
+    body { max-width: 72rem; margin: 0 auto; padding: 2rem; }
+    header, section { margin-block: 0 2rem; }
+    h1, h2 { line-height: 1.15; }
+    dl { display: grid; grid-template-columns: max-content 1fr; gap: .4rem 1rem; }
+    dt { font-weight: 700; }
+    dd { margin: 0; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: .65rem; border: 1px solid currentColor; text-align: left; vertical-align: top; }
+    .status { display: inline-block; padding: .2rem .55rem; border: 1px solid; border-radius: 999px; }
+    @media (max-width: 40rem) { body { padding: 1rem; } dl { display: block; } dd { margin-bottom: .7rem; } }
+  </style>
+</head>
+<body>
+  <article
+    data-status="exploring"
+    data-updated="YYYY-MM-DD"
+    data-repository="REMOTE OR ABSOLUTE PATH"
+    data-base-head="GIT SHA"
+    data-implementation-authority="not-authorized"
+  >
+    <header>
+      <p class="status">exploring</p>
+      <h1>TITLE</h1>
+      <dl>
+        <dt>Updated</dt><dd>YYYY-MM-DD</dd>
+        <dt>Repository</dt><dd>REMOTE OR ABSOLUTE PATH</dd>
+        <dt>Base head</dt><dd>GIT SHA</dd>
+        <dt>Last verified</dt><dd>YYYY-MM-DD OR UNVERIFIED</dd>
+        <dt>Owner</dt><dd>OWNER</dd>
+        <dt>Revisit when</dt><dd>TRIGGER</dd>
+      </dl>
+    </header>
+
+    <section aria-labelledby="question">
+      <h2 id="question">Question</h2>
+      <p>ONE DECISION</p>
+    </section>
+
+    <section aria-labelledby="constraints">
+      <h2 id="constraints">Constraints</h2>
+      <ul><li>BINDING CONSTRAINT</li></ul>
+    </section>
+
+    <section aria-labelledby="comparison">
+      <h2 id="comparison">Options and evidence</h2>
+      <table>
+        <thead><tr><th>Option</th><th>Evidence and source</th><th>Verified</th><th>Tradeoff</th></tr></thead>
+        <tbody><tr><td>OPTION</td><td>EVIDENCE AND LINK</td><td>YYYY-MM-DD</td><td>TRADEOFF</td></tr></tbody>
+      </table>
+    </section>
+
+    <section aria-labelledby="outcome">
+      <h2 id="outcome">Outcome</h2>
+      <p>CHOICE AND WHY, OR THE REMAINING CHOICE</p>
+    </section>
+
+    <section aria-labelledby="bridge">
+      <h2 id="bridge">Bridge</h2>
+      <h3>Acceptance criteria</h3>
+      <ul><li>OBSERVABLE RESULT</li></ul>
+      <h3>Non-goals</h3>
+      <ul><li>OUT OF SCOPE</li></ul>
+      <dl>
+        <dt>Prototype</dt><dd>PATH OR URL</dd>
+        <dt>Implementation authority</dt><dd>NOT AUTHORIZED</dd>
+        <dt>Delivery</dt><dd>NOT STARTED, ISSUE, OR PR</dd>
+        <dt>Delivered head</dt><dd>NONE OR GIT SHA</dd>
+        <dt>Receipt</dt><dd>NONE OR PATH/URL</dd>
+      </dl>
+    </section>
+
+    <section aria-labelledby="return-point">
+      <h2 id="return-point">Return point</h2>
+      <dl>
+        <dt>Desired outcome</dt><dd>OUTCOME</dd>
+        <dt>Ordered decisions</dt><dd>DECISIONS OR NONE</dd>
+        <dt>Milestones</dt><dd>MILESTONES AND DEPENDENCIES OR NONE</dd>
+        <dt>Issue candidates</dt><dd>TITLES OR NONE</dd>
+        <dt>First safe action</dt><dd>ACTION</dd>
+        <dt>Run or view</dt><dd>COMMAND</dd>
+        <dt>Related work</dt><dd>ISSUE, PLAN, OR NONE</dd>
+        <dt>Open question</dt><dd>QUESTION OR NONE</dd>
+      </dl>
+    </section>
+  </article>
+</body>
+</html>
