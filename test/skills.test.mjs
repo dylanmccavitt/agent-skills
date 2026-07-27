@@ -432,3 +432,64 @@ test("supersede refuses a Superseded by row misplaced outside the header", () =>
   const stale = run(["list", "--stale"]);
   assert.match(stale.stdout, /superseded without a successor link/);
 });
+
+test("status refuses a record whose header lost its Updated row to another list", () => {
+  const cli = resolve(root, "bin", "decision-shelf.mjs");
+  const shelf = mkdtempSync(join(tmpdir(), "decision-shelf-dup-updated-"));
+  const workspace = mkdtempSync(join(tmpdir(), "decision-shelf-repo-"));
+  mkdirSync(join(workspace, "project"), { recursive: true });
+  const env = { ...process.env, DECISION_SHELF_HOME: shelf };
+  const run = (args) =>
+    spawnSync(process.execPath, [cli, ...args], {
+      cwd: join(workspace, "project"),
+      env,
+      encoding: "utf8",
+    });
+
+  const record = run(["new", "Pick a formatter"]).stdout.trim();
+  // The header's Updated row is gone; an identical-looking row lives in the
+  // Bridge. A global preflight would pass and mutate the wrong row.
+  const mangled = readFileSync(record, "utf8")
+    .replace(/<dt>Updated<\/dt><dd>[^<]*<\/dd>/, "")
+    .replace("<dt>Prototype</dt>", "<dt>Updated</dt><dd>2001-01-01</dd>\n        <dt>Prototype</dt>");
+  writeFileSync(record, mangled);
+  const refused = run(["status", record, "selected"]);
+  assert.notEqual(refused.status, 0);
+  assert.match(refused.stderr, /missing expected structure/);
+  assert.equal(readFileSync(record, "utf8"), mangled, "the record is left untouched");
+});
+
+test("single-quoted successor anchors count as linked", () => {
+  const cli = resolve(root, "bin", "decision-shelf.mjs");
+  const shelf = mkdtempSync(join(tmpdir(), "decision-shelf-quotes-"));
+  const workspace = mkdtempSync(join(tmpdir(), "decision-shelf-repo-"));
+  mkdirSync(join(workspace, "project"), { recursive: true });
+  const env = { ...process.env, DECISION_SHELF_HOME: shelf };
+  const run = (args) =>
+    spawnSync(process.execPath, [cli, ...args], {
+      cwd: join(workspace, "project"),
+      env,
+      encoding: "utf8",
+    });
+
+  const record = run(["new", "Pick a bundler"]).stdout.trim();
+  const other = run(["new", "Bundler second pass"]).stdout.trim();
+  writeFileSync(
+    record,
+    readFileSync(record, "utf8")
+      .replace('data-status="exploring"', 'data-status="superseded"')
+      .replace(
+        "</dl>",
+        "  <dt>Superseded by</dt><dd><a href='next.html'>next</a></dd>\n      </dl>",
+      ),
+  );
+  const stale = run(["list", "--stale"]);
+  assert.doesNotMatch(
+    stale.stdout,
+    /superseded without a successor link/,
+    "a single-quoted anchor is a valid successor link",
+  );
+  const again = run(["supersede", record, other]);
+  assert.notEqual(again.status, 0);
+  assert.match(again.stderr, /already superseded/);
+});
