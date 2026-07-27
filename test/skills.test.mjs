@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -519,6 +527,10 @@ test("decision-shelf proto lanes live beside their record and settle with it", (
   const bare = run(["proto", record, "new"]);
   assert.equal(bare.status, 0, bare.stderr);
   assert.equal(bare.stdout.trim(), lane);
+  assert.ok(
+    existsSync(join(lane, ".decision-shelf-lane")),
+    "creation writes the ownership marker",
+  );
   const cursor = run(["proto", record, "new", "cursor-based"]);
   assert.equal(cursor.status, 0, cursor.stderr);
   assert.match(cursor.stdout, /cursor-based\/index\.html$/m);
@@ -550,6 +562,10 @@ test("decision-shelf proto lanes live beside their record and settle with it", (
   const refused = run(["proto", record, "promote", "cursor-based"]);
   assert.notEqual(refused.status, 0);
   assert.match(refused.stderr, /missing expected structure/);
+  writeFileSync(record, pristine.replace(/<dt>Updated<\/dt><dd>[^<]*<\/dd>/, ""));
+  const refusedDate = run(["proto", record, "promote", "cursor-based"]);
+  assert.notEqual(refusedDate.status, 0, "a missing visible Updated row is refused too");
+  assert.match(refusedDate.stderr, /missing expected structure/);
   writeFileSync(record, pristine);
 
   // A settled record with a lane still present is stale; cleaning resolves it.
@@ -573,4 +589,52 @@ test("decision-shelf proto lanes live beside their record and settle with it", (
   const nothingToClean = run(["proto", record, "clean"]);
   assert.notEqual(nothingToClean.status, 0);
   assert.match(nothingToClean.stderr, /no prototype lane to remove/);
+});
+
+test("proto refuses unmanaged and symlinked lane paths outright", () => {
+  const cli = resolve(root, "bin", "decision-shelf.mjs");
+  const shelf = mkdtempSync(join(tmpdir(), "decision-shelf-ownership-"));
+  const workspace = mkdtempSync(join(tmpdir(), "decision-shelf-repo-"));
+  mkdirSync(join(workspace, "project"), { recursive: true });
+  const env = { ...process.env, DECISION_SHELF_HOME: shelf };
+  const run = (args) =>
+    spawnSync(process.execPath, [cli, ...args], {
+      cwd: join(workspace, "project"),
+      env,
+      encoding: "utf8",
+    });
+
+  // A pre-existing ordinary directory at the lane path is user data: the
+  // filename alone is not ownership. Every action refuses; nothing is
+  // adopted, written into, or deleted.
+  const record = run(["new", "Choose an id scheme"]).stdout.trim();
+  const lane = record.replace(/\.html$/, ".proto");
+  mkdirSync(lane);
+  writeFileSync(join(lane, "precious.txt"), "user data\n");
+  for (const args of [["new", "variant-a"], ["view"], ["promote", "variant-a"], ["clean"]]) {
+    const refused = run(["proto", record, ...args]);
+    assert.notEqual(refused.status, 0, `proto ${args.join(" ")} must refuse an unmanaged directory`);
+    assert.match(refused.stderr, /not created by proto/);
+  }
+  assert.equal(
+    readFileSync(join(lane, "precious.txt"), "utf8"),
+    "user data\n",
+    "unmanaged directory contents are untouched",
+  );
+
+  // Unowned directories never drive lane staleness.
+  run(["status", record, "selected"]);
+  const stale = run(["list", "--stale"]);
+  assert.doesNotMatch(stale.stdout, /prototype lane still present/);
+
+  // A symlinked lane path is refused before any traversal or write.
+  const second = run(["new", "Choose a palette"]).stdout.trim();
+  const target = mkdtempSync(join(tmpdir(), "decision-shelf-lane-target-"));
+  symlinkSync(target, second.replace(/\.html$/, ".proto"));
+  for (const args of [["new", "v1"], ["view"], ["clean"]]) {
+    const refused = run(["proto", second, ...args]);
+    assert.notEqual(refused.status, 0, `proto ${args.join(" ")} must refuse a symlinked lane`);
+    assert.match(refused.stderr, /symlink/);
+  }
+  assert.deepEqual(readdirSync(target), [], "symlink target is never written or removed");
 });

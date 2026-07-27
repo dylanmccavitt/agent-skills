@@ -128,7 +128,7 @@ function recordSummary(path) {
   const header = text.match(/<header>[\s\S]*?<\/header>/)?.[0] || "";
   const successor = header.match(/<dt>Superseded by<\/dt>\s*<dd>([\s\S]*?)<\/dd>/);
   const linked = Boolean(successor && SUCCESSOR_ANCHOR.test(successor[1]));
-  const lane = existsSync(lanePath(path));
+  const lane = laneOwned(lanePath(path));
   return { status, updated, title, linked, lane };
 }
 
@@ -141,6 +141,19 @@ function lanePath(recordPath) {
 // Records are hand-edited semantic HTML: both valid attribute quoting forms
 // count as a successor anchor.
 const SUCCESSOR_ANCHOR = /<a\s[^>]*href\s*=\s*("[^"]+"|'[^']+')/;
+
+// Ownership is proven by a marker written at creation, never inferred from
+// the directory name: an unmarked or symlinked directory at the lane path is
+// user data the CLI refuses to adopt, mutate, remove, or count as a lane.
+const LANE_MARKER = ".decision-shelf-lane";
+
+function laneOwned(lane) {
+  try {
+    return !lstatSync(lane).isSymbolicLink() && existsSync(join(lane, LANE_MARKER));
+  } catch {
+    return false;
+  }
+}
 
 const STALE_AFTER_DAYS = 30;
 
@@ -671,8 +684,37 @@ function commandProto(shelf, project, rest) {
   const lane = lanePath(recordPath);
   const variantArg = slugify(args.join(" ").trim() || "");
 
+  // Anything on disk at the lane path — including a dangling symlink —
+  // counts as present; whether it is ours is a separate, marker-backed
+  // question. The filename alone never proves ownership.
+  let laneOnDisk = true;
+  try {
+    lstatSync(lane);
+  } catch {
+    laneOnDisk = false;
+  }
+  const requireOwned = () => {
+    if (lstatSync(lane).isSymbolicLink()) {
+      throw new Error(`lane path is a symlink — refusing to touch it:\n${lane}`);
+    }
+    if (!existsSync(join(lane, LANE_MARKER))) {
+      throw new Error(
+        `a directory exists at the lane path but was not created by proto — refusing to touch it:\n${lane}`,
+      );
+    }
+  };
+
   if (action === "new") {
-    mkdirSync(lane, { recursive: true });
+    if (laneOnDisk) {
+      requireOwned();
+    } else {
+      mkdirSync(lane, { recursive: true });
+      writeFileSync(
+        join(lane, LANE_MARKER),
+        `${JSON.stringify({ record: basename(recordPath), owner: "decision-shelf proto" })}\n`,
+        { flag: "wx" },
+      );
+    }
     if (!args.length) {
       console.log(lane);
       return;
@@ -697,9 +739,10 @@ function commandProto(shelf, project, rest) {
     );
     console.log(entry);
   } else if (action === "view") {
-    if (!existsSync(lane)) {
+    if (!laneOnDisk) {
       throw new Error(`no prototype lane for this record — create one: proto <record> new [variant]`);
     }
+    requireOwned();
     const variants = laneVariants(lane);
     if (variants.length === 0) {
       console.log(`(empty lane) ${lane}`);
@@ -713,6 +756,10 @@ function commandProto(shelf, project, rest) {
     }
   } else if (action === "promote") {
     if (!args.length) throw new Error(`provide the surviving variant: ${PROTO_USAGE}`);
+    if (!laneOnDisk) {
+      throw new Error(`no prototype lane for this record — create one: proto <record> new [variant]`);
+    }
+    requireOwned();
     const directory = join(lane, variantArg);
     if (!existsSync(directory)) {
       throw new Error(
@@ -722,10 +769,15 @@ function commandProto(shelf, project, rest) {
     // One read, full preflight, one write: a record missing any field the
     // promotion touches is refused, never partially rewritten.
     const text = readFileSync(recordPath, "utf8");
-    const required = [/<dt>Prototype<\/dt><dd>[\s\S]*?<\/dd>/, /<\/tbody>/, /data-updated="[^"]*"/];
+    const required = [
+      /<dt>Prototype<\/dt><dd>[\s\S]*?<\/dd>/,
+      /<\/tbody>/,
+      /data-updated="[^"]*"/,
+      /<dt>Updated<\/dt><dd>[^<]*<\/dd>/,
+    ];
     if (!required.every((pattern) => pattern.test(text))) {
       throw new Error(
-        `record is missing expected structure (Prototype field, evidence table, data-updated) — edit it by hand:\n${recordPath}`,
+        `record is missing expected structure (Prototype field, evidence table, data-updated, Updated row) — edit it by hand:\n${recordPath}`,
       );
     }
     const today = new Date().toISOString().slice(0, 10);
@@ -744,10 +796,8 @@ function commandProto(shelf, project, rest) {
     console.log(`promoted: ${variantArg}`);
     console.log(`record updated: ${recordPath}`);
   } else if (action === "clean") {
-    if (!existsSync(lane)) throw new Error(`no prototype lane to remove for:\n${recordPath}`);
-    if (lstatSync(lane).isSymbolicLink()) {
-      throw new Error(`lane is a symlink — refusing to remove:\n${lane}`);
-    }
+    if (!laneOnDisk) throw new Error(`no prototype lane to remove for:\n${recordPath}`);
+    requireOwned();
     const count = laneVariants(lane).length;
     rmSync(lane, { recursive: true });
     console.log(`removed ${lane} (${count} variant${count === 1 ? "" : "s"})`);
