@@ -9,7 +9,7 @@ const expectedDirectories = ["bin/", "cairn/", "compass/", "relay/"];
 
 test("package allowlist ships only the skills, CLIs, and docs", () => {
   const pkg = JSON.parse(readFileSync(resolve(root, "package.json")));
-  assert.equal(pkg.version, "1.0.0");
+  assert.equal(pkg.version, "1.1.0");
   assert.deepEqual(pkg.bin, {
     "agent-skills": "bin/install.mjs",
     "decision-shelf": "bin/decision-shelf.mjs",
