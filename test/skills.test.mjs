@@ -14,10 +14,15 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 
-import { staleReason } from "../bin/decision-shelf.mjs";
+import { escapeHtml, staleReason } from "../bin/decision-shelf.mjs";
 import { skillNames, validateSkill } from "../scripts/validate-skills.mjs";
 
 const root = resolve(new URL("..", import.meta.url).pathname);
+
+test("escapeHtml makes CLI text safe for HTML text and attributes", () => {
+  assert.equal(escapeHtml(`a <b> & "c" 'd'`), "a &lt;b&gt; &amp; &quot;c&quot; &#39;d&#39;");
+  assert.equal(escapeHtml("plain"), "plain");
+});
 
 test("shipped skills satisfy discovery and reference contracts", () => {
   assert.deepEqual(skillNames, ["compass", "relay", "cairn"]);
@@ -741,4 +746,91 @@ test("lane ownership is project-qualified, not basename-deep", () => {
     existsSync(join(recordTwo.replace(/\.html$/, ".proto"), "v1", "index.html")),
     "the moved lane's contents are untouched",
   );
+});
+
+test("mutation commands refuse absolute and symlink-escaped records outside the project shelf", () => {
+  const cli = resolve(root, "bin", "decision-shelf.mjs");
+  const shelf = mkdtempSync(join(tmpdir(), "decision-shelf-containment-"));
+  const workspace = mkdtempSync(join(tmpdir(), "decision-shelf-containment-repo-"));
+  const outside = mkdtempSync(join(tmpdir(), "decision-shelf-outside-"));
+  mkdirSync(join(workspace, "project"), { recursive: true });
+  const env = { ...process.env, DECISION_SHELF_HOME: shelf };
+  const run = (args) =>
+    spawnSync(process.execPath, [cli, ...args], {
+      cwd: join(workspace, "project"),
+      env,
+      encoding: "utf8",
+    });
+
+  const record = run(["new", "Contain this record"]).stdout.trim();
+  assert.ok(existsSync(record));
+  const projectDir = resolve(record, "..");
+  const pristine = readFileSync(record, "utf8");
+
+  // Absolute path to a copy outside the shelf must not mutate that file.
+  const victim = join(outside, "victim.html");
+  writeFileSync(victim, pristine);
+  for (const args of [
+    ["status", victim, "selected"],
+    ["proto", victim, "new", "escape"],
+    ["bridge", victim],
+  ]) {
+    const refused = run(args);
+    assert.notEqual(refused.status, 0, `${args.join(" ")} must refuse an outside path`);
+    assert.match(refused.stderr, /outside this project's shelf|must resolve under/i);
+  }
+  assert.equal(readFileSync(victim, "utf8"), pristine, "outside record is untouched");
+  assert.deepEqual(
+    readdirSync(outside).filter((name) => name !== "victim.html"),
+    [],
+    "no proto lane or sibling files appear outside the shelf",
+  );
+
+  // A symlink inside the project shelf that points outside is refused; the
+  // target stays pristine and no lane is created beside the symlink.
+  const escapeLink = join(projectDir, "escape-link.html");
+  symlinkSync(victim, escapeLink);
+  for (const args of [
+    ["status", escapeLink, "selected"],
+    ["proto", escapeLink, "new", "via-link"],
+    ["bridge", escapeLink],
+  ]) {
+    const refused = run(args);
+    assert.notEqual(refused.status, 0, `${args.join(" ")} must refuse a symlink escape`);
+    assert.match(refused.stderr, /regular HTML file|outside this project's shelf|symlink/i);
+  }
+  assert.equal(readFileSync(victim, "utf8"), pristine, "symlink target is untouched");
+  assert.ok(!existsSync(escapeLink.replace(/\.html$/, ".proto")));
+
+  // A real full path on the project shelf still works.
+  const allowed = run(["status", record, "selected"]);
+  assert.equal(allowed.status, 0, allowed.stderr);
+  assert.match(readFileSync(record, "utf8"), /data-status="selected"/);
+});
+
+test("decision-shelf new HTML-escapes CLI substitutions so markup is not executable", () => {
+  const cli = resolve(root, "bin", "decision-shelf.mjs");
+  const shelf = mkdtempSync(join(tmpdir(), "decision-shelf-escape-"));
+  const workspace = mkdtempSync(join(tmpdir(), "decision-shelf-escape-repo-"));
+  mkdirSync(join(workspace, "project"), { recursive: true });
+  const payload = '</h1><script>alert(1)</script><h1 x="evil">xss';
+  const created = spawnSync(process.execPath, [cli, "new", payload], {
+    cwd: join(workspace, "project"),
+    env: { ...process.env, DECISION_SHELF_HOME: shelf },
+    encoding: "utf8",
+  });
+  assert.equal(created.status, 0, created.stderr);
+  const record = readFileSync(created.stdout.trim(), "utf8");
+
+  assert.doesNotMatch(record, /<script\b/i);
+  assert.doesNotMatch(record, /<\/h1><script/i);
+  assert.match(record, /&lt;\/h1&gt;&lt;script&gt;alert\(1\)&lt;\/script&gt;&lt;h1/);
+  assert.match(record, /&quot;/);
+  assert.match(record, /<title>Decision: .*&lt;\/h1&gt;/);
+  assert.match(record, /<h1>.*&lt;script&gt;.*<\/h1>/);
+  assert.match(record, /<p>.*&lt;script&gt;.*<\/p>/);
+  // Template structure survived: one title, one status chip, one question h1.
+  assert.equal([...record.matchAll(/<h1>/g)].length, 1);
+  assert.match(record, /data-status="exploring"/);
+  assert.doesNotMatch(record, /\{\{[A-Z_]+\}\}/);
 });

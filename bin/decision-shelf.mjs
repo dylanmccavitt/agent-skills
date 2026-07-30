@@ -292,12 +292,14 @@ function commandNew(shelf, project, question, cwd = process.cwd()) {
   // The template marks CLI-filled slots with delimited {{TOKEN}} placeholders
   // so no replacement can collide with the prose placeholders left for hand
   // editing (TITLES OR NONE, NONE OR GIT SHA, the YYYY-MM-DD evidence cell).
-  // The question is user text, so it is substituted last and never rescanned.
+  // Every CLI-supplied value is HTML-escaped before substitution so it is
+  // safe in both text nodes and double-quoted attributes; the question is
+  // substituted last and never rescanned.
   const record = readFileSync(TEMPLATE, "utf8")
-    .replaceAll("{{CREATED}}", today)
-    .replaceAll("{{REPOSITORY}}", repository)
-    .replaceAll("{{BASE_HEAD}}", head)
-    .replaceAll("{{QUESTION}}", question);
+    .replaceAll("{{CREATED}}", escapeHtml(today))
+    .replaceAll("{{REPOSITORY}}", escapeHtml(repository))
+    .replaceAll("{{BASE_HEAD}}", escapeHtml(head))
+    .replaceAll("{{QUESTION}}", escapeHtml(question));
   mkdirSync(directory, { recursive: true });
   writeFileSync(path, record, { flag: "wx" });
   console.log(path);
@@ -535,6 +537,59 @@ function physicallyInside(base, directory) {
   return real === realBase || real.startsWith(`${realBase}${sep}`);
 }
 
+// CLI-filled template slots land in both text nodes and double-quoted
+// attributes. Escape once for both contexts so user/repo text cannot open
+// tags or break out of attribute quotes.
+export function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+// Mutation commands may accept a basename needle or a full path, but every
+// accepted record must be a regular .html file whose physical path stays
+// under this project's shelf folder — absolute paths and symlink escapes
+// are refused before any read or write.
+function assertProjectRecord(shelf, project, recordPath) {
+  const projectRoot = resolve(shelf, project);
+  let stat;
+  try {
+    stat = lstatSync(recordPath);
+  } catch {
+    throw new Error(`record not found — refusing:\n${recordPath}`);
+  }
+  if (stat.isSymbolicLink() || !stat.isFile()) {
+    throw new Error(
+      `record path must be a regular HTML file on the project shelf — refusing:\n${recordPath}`,
+    );
+  }
+  let real;
+  let realProject;
+  try {
+    real = realpathSync(recordPath);
+    realProject = realpathSync(projectRoot);
+  } catch {
+    throw new Error(
+      `record path must resolve under this project's shelf — refusing:\n${recordPath}`,
+    );
+  }
+  if (real !== realProject && !real.startsWith(`${realProject}${sep}`)) {
+    throw new Error(
+      `record path is outside this project's shelf — refusing:\n${recordPath}`,
+    );
+  }
+  if (!basename(real).endsWith(".html")) {
+    throw new Error(`record path must end in .html — refusing:\n${recordPath}`);
+  }
+  // Keep the caller's spelling (after lexical resolve). realpath is only for
+  // the containment proof — rewriting /var to /private/var would break path
+  // equality with paths printed by `new`.
+  return resolve(recordPath);
+}
+
 export function scaffoldBridgeTests(recordPath, criteria, cwd = process.cwd()) {
   const slug = basename(recordPath, ".html").replace(/^\d{4}-\d{2}-\d{2}-/, "");
   const fileName = `bridge-${slug}.test.mjs`;
@@ -567,7 +622,9 @@ export function scaffoldBridgeTests(recordPath, criteria, cwd = process.cwd()) {
 
 function resolveRecord(shelf, project, query, usage) {
   if (!query) throw new Error(`provide a record path or name: ${usage}`);
-  if (query.endsWith(".html") && existsSync(query)) return resolve(query);
+  if (query.endsWith(".html") && existsSync(query)) {
+    return assertProjectRecord(shelf, project, resolve(query));
+  }
   const needle = query.toLowerCase();
   const matches = listRecords(join(shelf, project)).filter((path) =>
     basename(path).toLowerCase().includes(needle),
@@ -578,7 +635,7 @@ function resolveRecord(shelf, project, query, usage) {
   if (matches.length > 1) {
     throw new Error(`"${query}" matches several records — use a full path:\n${matches.join("\n")}`);
   }
-  return matches[0];
+  return assertProjectRecord(shelf, project, matches[0]);
 }
 
 // Records are hand-edited HTML, so every pattern a mutation will touch is
