@@ -23,7 +23,7 @@ import { doctorSuite, installSuite, uninstallSuite } from "../bin/install.mjs";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const v1Skills = ["gepetto", "painter", "vigil", "checkpoint", "orchestrate"];
-const currentSkills = ["compass", "relay", "cairn"];
+const currentSkills = ["compass", "scout", "relay", "cairn"];
 const voiceHook = {
   matcher: ".*",
   hooks: [

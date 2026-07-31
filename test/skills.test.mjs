@@ -74,7 +74,7 @@ test("HTML and repository metadata helpers remove executable and secret-bearing 
 });
 
 test("shipped skills satisfy discovery and reference contracts", () => {
-  assert.deepEqual(skillNames, ["compass", "relay", "cairn"]);
+  assert.deepEqual(skillNames, ["compass", "scout", "relay", "cairn"]);
   for (const name of skillNames) {
     assert.equal(validateSkill(root, name), true);
   }
@@ -105,6 +105,7 @@ test("compass keeps the visual-first interactive decision loop", () => {
   assert.match(compass, /Record: <absolute path>/);
   assert.match(compass, /Record: none/);
   assert.match(compass, /\$relay/);
+  assert.match(compass, /\$scout/);
 
   const record = readFileSync(
     resolve(root, "compass", "assets", "decision-record.html"),
@@ -115,6 +116,17 @@ test("compass keeps the visual-first interactive decision loop", () => {
   assert.match(record, /<h2 id="bridge">Bridge<\/h2>/);
   assert.match(record, /data-repository=/);
   assert.match(record, /data-base-head=/);
+});
+
+test("scout keeps planning bounded and evolves selected plans through the tree", () => {
+  const scout = readFileSync(resolve(root, "scout", "SKILL.md"), "utf8");
+  assert.match(scout, /scope → shape → data → edges → seams → done-looks-like/);
+  assert.match(scout, /one compact question per turn/i);
+  assert.match(scout, /decision-shelf propose/);
+  assert.match(scout, /decision-shelf checkpoint/);
+  assert.match(scout, /decision-shelf reject/);
+  assert.match(scout, /decision-shelf view/);
+  assert.match(scout, /do not silently rewrite the plan/i);
 });
 
 test("relay keeps briefs bounded and receipts compact", () => {

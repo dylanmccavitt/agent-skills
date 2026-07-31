@@ -30,7 +30,7 @@ const MARKER_FILE = ".agent-skills-install.json";
 // or remove, never foreign.
 const LEGACY_INSTALL_DIRECTORY = "orchestration-skills";
 const LEGACY_MARKER_FILE = ".codex-orchestration-install.json";
-const SKILLS = ["compass", "relay", "cairn"];
+const SKILLS = ["compass", "scout", "relay", "cairn"];
 const RETIRED_SKILLS = [
   "teamwork",
   "governed-delivery",
