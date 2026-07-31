@@ -50,6 +50,13 @@ Usage:
   decision-shelf supersede <old> <new>
                                      Mark <old> superseded and link its successor
   decision-shelf find <text>         Find records matching text in name or content
+  decision-shelf propose <record> "<change>"
+                                     Add a visible branch without changing the current plan
+  decision-shelf checkpoint <record> <proposal-id>
+                                     Fold an open branch into a new current revision
+  decision-shelf reject <record> <proposal-id> "<reason>"
+                                     Close a branch and retain its rationale in history
+  decision-shelf view <record>       Print the stable absolute path to its visual tree
   decision-shelf bridge <record>     Turn a record's acceptance criteria into failing tests
   decision-shelf proto <record> new [variant]
                                      Create the record's disposable prototype lane
@@ -1370,6 +1377,138 @@ function commandFind(shelf, text) {
   for (const record of matches) printRecord(record);
 }
 
+const PLAN_TREE_PATTERN = /<section id="plan-tree"[\s\S]*?<\/section>/;
+
+function planRecord(shelf, project, query, usage) {
+  const recordPath = resolveRecord(shelf, project, query, usage);
+  const text = readFileSync(recordPath, "utf8");
+  const status = text.match(/data-status="([^"]*)"/)?.[1];
+  if (status !== "selected") {
+    throw new Error(`plan changes require a selected record; found ${status || "unknown"}:\n${recordPath}`);
+  }
+  if (!PLAN_TREE_PATTERN.test(text) || !/data-plan-revision="\d+"/.test(text)) {
+    throw new Error(`record has no managed plan tree — create or upgrade it before mutation:\n${recordPath}`);
+  }
+  return { recordPath, text };
+}
+
+function proposalPattern(id) {
+  return new RegExp(
+    `<li data-proposal-id="${id}" data-proposal-status="open">([\\s\\S]*?)<\\/li>`,
+  );
+}
+
+function proposalText(item) {
+  return item
+    .replace(/<strong>P\d+<\/strong>\s*·\s*/, "")
+    .replace(/<span class="proposal-status">[\s\S]*?<\/span>/, "")
+    .replace(/<[^>]+>/g, "")
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">")
+    .replaceAll("&quot;", '"')
+    .replaceAll("&#39;", "'")
+    .replaceAll("&amp;", "&")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function touchSelected(text, recordPath) {
+  return statusTransforms(text, "selected", recordPath);
+}
+
+function commandPropose(shelf, project, rest) {
+  const [query, ...changeParts] = rest;
+  const change = changeParts.join(" ").trim();
+  if (!query || !change) throw new Error('usage: propose <record> "<change>"');
+  const { recordPath, text } = planRecord(shelf, project, query, 'propose <record> "<change>"');
+  const ids = [...text.matchAll(/data-proposal-id="P(\d+)"/g)].map((match) => Number(match[1]));
+  const id = `P${Math.max(0, ...ids) + 1}`;
+  const item = `<li data-proposal-id="${id}" data-proposal-status="open"><strong>${id}</strong> · ${escapeHtml(change)} <span class="proposal-status">open</span></li>`;
+  const tree = text.match(PLAN_TREE_PATTERN)[0];
+  const branches = tree.match(/<ul class="plan-branches"[\s\S]*?<\/ul>/)?.[0];
+  if (!branches) throw new Error(`plan tree has no branch list — edit it by hand:\n${recordPath}`);
+  const patchedBranches = branches
+    .replace(/\s*<li class="empty">[\s\S]*?<\/li>/, "")
+    .replace("</ul>", `  ${item}\n        </ul>`);
+  const next = touchSelected(text.replace(branches, () => patchedBranches), recordPath);
+  writeFileSync(recordPath, next);
+  console.log(`${id}: ${change}`);
+  console.log(recordPath);
+}
+
+function commandCheckpoint(shelf, project, rest) {
+  const [query, rawId] = rest;
+  const id = rawId?.toUpperCase();
+  if (!query || !/^P\d+$/.test(id || "") || rest.length !== 2) {
+    throw new Error("usage: checkpoint <record> <proposal-id>");
+  }
+  const { recordPath, text } = planRecord(shelf, project, query, "checkpoint <record> <proposal-id>");
+  const pattern = proposalPattern(id);
+  const match = text.match(pattern);
+  if (!match) throw new Error(`open proposal ${id} was not found:\n${recordPath}`);
+  const revision = Number(text.match(/data-plan-revision="(\d+)"/)?.[1]);
+  const nextRevision = revision + 1;
+  const change = proposalText(match[1]);
+  let next = text
+    .replace(pattern, "")
+    .replace(/data-plan-revision="\d+"/, `data-plan-revision="${nextRevision}"`)
+    .replace(/(<span data-current-revision>)\d+(<\/span>)/, `$1${nextRevision}$2`)
+    .replace(
+      "</ul>\n        </div>",
+      `  <li data-accepted-revision="${nextRevision}">${escapeHtml(change)}</li>\n          </ul>\n        </div>`,
+    )
+    .replace(
+      "</ol>",
+      `  <li data-plan-revision="${nextRevision}">Revision ${nextRevision} · accepted ${escapeHtml(change)}</li>\n        </ol>`,
+    );
+  if (!/data-proposal-status="open"/.test(next)) {
+    next = next.replace(
+      /(<ul class="plan-branches"[^>]*>)\s*(<\/ul>)/,
+      '$1\n          <li class="empty">No open branches</li>\n        $2',
+    );
+  }
+  next = touchSelected(next, recordPath);
+  writeFileSync(recordPath, next);
+  console.log(`revision ${nextRevision}: accepted ${id}`);
+  console.log(recordPath);
+}
+
+function commandReject(shelf, project, rest) {
+  const [query, rawId, ...reasonParts] = rest;
+  const id = rawId?.toUpperCase();
+  const reason = reasonParts.join(" ").trim();
+  if (!query || !/^P\d+$/.test(id || "") || !reason) {
+    throw new Error('usage: reject <record> <proposal-id> "<reason>"');
+  }
+  const { recordPath, text } = planRecord(shelf, project, query, 'reject <record> <proposal-id> "<reason>"');
+  const pattern = proposalPattern(id);
+  const match = text.match(pattern);
+  if (!match) throw new Error(`open proposal ${id} was not found:\n${recordPath}`);
+  const change = proposalText(match[1]);
+  let next = text.replace(pattern, "").replace(
+    "</ol>",
+    `  <li data-rejected-proposal="${id}">Rejected ${id} · ${escapeHtml(change)} — ${escapeHtml(reason)}</li>\n        </ol>`,
+  );
+  if (!/data-proposal-status="open"/.test(next)) {
+    next = next.replace(
+      /(<ul class="plan-branches"[^>]*>)\s*(<\/ul>)/,
+      '$1\n          <li class="empty">No open branches</li>\n        $2',
+    );
+  }
+  next = touchSelected(next, recordPath);
+  writeFileSync(recordPath, next);
+  console.log(`rejected ${id}: ${reason}`);
+  console.log(recordPath);
+}
+
+function commandView(shelf, project, query) {
+  const recordPath = resolveRecord(shelf, project, query, "view <record>");
+  if (!PLAN_TREE_PATTERN.test(readFileSync(recordPath, "utf8"))) {
+    throw new Error(`record has no visual plan tree:\n${recordPath}`);
+  }
+  console.log(recordPath);
+}
+
 function main() {
   const [command, ...rest] = process.argv.slice(2);
   if (!command || command === "help" || command === "--help" || command === "-h") {
@@ -1389,6 +1528,10 @@ function main() {
   else if (command === "supersede") commandSupersede(shelf, project, rest);
   else if (command === "proto") commandProto(shelf, project, rest);
   else if (command === "find") commandFind(shelf, rest.join(" ").trim());
+  else if (command === "propose") commandPropose(shelf, project, rest);
+  else if (command === "checkpoint") commandCheckpoint(shelf, project, rest);
+  else if (command === "reject") commandReject(shelf, project, rest);
+  else if (command === "view") commandView(shelf, project, rest.join(" ").trim());
   else if (command === "bridge") commandBridge(shelf, project, rest.join(" ").trim());
   else throw new Error(`unknown command: ${command} (try: decision-shelf help)`);
 }

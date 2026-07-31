@@ -15,6 +15,13 @@
     table { width: 100%; border-collapse: collapse; }
     th, td { padding: .65rem; border: 1px solid currentColor; text-align: left; vertical-align: top; }
     .status { display: inline-block; padding: .2rem .55rem; border: 1px solid; border-radius: 999px; }
+    .plan-tree { display: flex; align-items: flex-start; gap: 1.5rem; flex-wrap: wrap; }
+    .plan-node { padding: .65rem .9rem; border: 2px solid currentColor; border-radius: .6rem; font-weight: 700; }
+    .plan-current-changes { margin: .45rem 0 0; padding-left: 1.25rem; font-weight: 400; }
+    .plan-branches, .plan-history { margin: 0; padding-left: 1.5rem; }
+    .plan-branches li { margin-bottom: .6rem; padding: .45rem .65rem; border-left: 2px solid currentColor; }
+    .plan-branches .empty { opacity: .65; border-left-style: dashed; }
+    .proposal-status { font-size: .85em; opacity: .7; }
     @media (max-width: 40rem) { body { padding: 1rem; } dl { display: block; } dd { margin-bottom: .7rem; } }
   </style>
 </head>
@@ -25,6 +32,7 @@
     data-repository="{{REPOSITORY}}"
     data-base-head="{{BASE_HEAD}}"
     data-implementation-authority="not-authorized"
+    data-plan-revision="1"
   >
     <header>
       <p class="status">exploring</p>
@@ -38,6 +46,23 @@
         <dt>Revisit when</dt><dd>TRIGGER</dd>
       </dl>
     </header>
+
+    <section id="plan-tree" aria-labelledby="plan-tree-heading">
+      <h2 id="plan-tree-heading">Plan tree</h2>
+      <div class="plan-tree" role="group" aria-label="Current plan and open branches">
+        <div class="plan-node">
+          Revision <span data-current-revision>1</span> · current
+          <ul class="plan-current-changes" aria-label="Accepted plan changes"><li>Initial plan</li></ul>
+        </div>
+        <ul class="plan-branches" aria-label="Open plan branches">
+          <li class="empty">No open branches</li>
+        </ul>
+      </div>
+      <details>
+        <summary>History</summary>
+        <ol class="plan-history"><li>Revision 1 · initial plan</li></ol>
+      </details>
+    </section>
 
     <section aria-labelledby="question">
       <h2 id="question">Question</h2>
