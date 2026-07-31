@@ -23,8 +23,13 @@ const PACKAGE_NAME = "@dylanmccavitt/agent-skills";
 // Installs written before the package rename carry the old name in their
 // marker; those roots are ours to upgrade or remove, never foreign.
 const OWNED_PACKAGE_NAMES = new Set([PACKAGE_NAME, "@dylanmccavitt/skills"]);
-const INSTALL_DIRECTORY = "orchestration-skills";
-const MARKER_FILE = ".codex-orchestration-install.json";
+const INSTALL_DIRECTORY = "agent-skills";
+const MARKER_FILE = ".agent-skills-install.json";
+// Installs written before the agent-skills rename live under the old
+// directory name with the old marker filename; both are ours to migrate
+// or remove, never foreign.
+const LEGACY_INSTALL_DIRECTORY = "orchestration-skills";
+const LEGACY_MARKER_FILE = ".codex-orchestration-install.json";
 const SKILLS = ["compass", "relay", "cairn"];
 const RETIRED_SKILLS = [
   "teamwork",
@@ -161,14 +166,44 @@ function legacyRelation(installRoot, legacyRoot) {
   return { hasLegacy, nested };
 }
 
-function assertDisjointRoots(installRoot, legacyRoot) {
-  const relation = legacyRelation(installRoot, legacyRoot);
-  if (relation.nested) {
+// The canonical root plus every physically distinct pre-rename root that
+// may hold an earlier install: the old directory name under the agents
+// home (pre-rename layout) and under the codex home (pre-v3 layout).
+function candidateRoots(homes) {
+  const installRoot = join(homes.agentsHome, INSTALL_DIRECTORY);
+  const legacyRoots = [];
+  const seen = new Set([physicalPath(installRoot)]);
+  for (const candidate of [
+    join(homes.agentsHome, LEGACY_INSTALL_DIRECTORY),
+    join(homes.codexHome, LEGACY_INSTALL_DIRECTORY),
+  ]) {
+    const key = physicalPath(candidate);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    legacyRoots.push(candidate);
+  }
+  return { installRoot, legacyRoots };
+}
+
+function nestedRootPair(installRoot, legacyRoots) {
+  const roots = [installRoot, ...legacyRoots];
+  for (let index = 0; index < roots.length; index += 1) {
+    for (let other = index + 1; other < roots.length; other += 1) {
+      if (legacyRelation(roots[index], roots[other]).nested) {
+        return [roots[index], roots[other]];
+      }
+    }
+  }
+  return null;
+}
+
+function assertDisjointRootSet(installRoot, legacyRoots) {
+  const pair = nestedRootPair(installRoot, legacyRoots);
+  if (pair) {
     throw new Error(
-      `Refusing nested canonical and legacy install roots: ${installRoot} and ${legacyRoot} overlap.`,
+      `Refusing nested canonical and legacy install roots: ${pair[0]} and ${pair[1]} overlap.`,
     );
   }
-  return relation.hasLegacy;
 }
 
 // An unused sibling name to park a root under during a mutation. Debris
@@ -200,8 +235,11 @@ function readManagedInstall(installRoot, action = "replace") {
   if (lstatSync(installRoot).isSymbolicLink()) {
     throw new Error(`Refusing symlinked install directory: ${installRoot}`);
   }
-  const markerPath = join(installRoot, MARKER_FILE);
-  if (!pathExists(markerPath)) {
+  const markerPath =
+    [MARKER_FILE, LEGACY_MARKER_FILE]
+      .map((name) => join(installRoot, name))
+      .find((path) => pathExists(path)) ?? null;
+  if (!markerPath) {
     // No marker at all: a directory some other tool owns, never ours.
     throw Object.assign(
       new Error(`Refusing to ${action} unmanaged directory: ${installRoot}`),
@@ -468,26 +506,27 @@ export function installSuite({
   }
 
   const homes = resolveHomes({ codexHome, agentsHome, claudeHome });
-  const installRoot = join(homes.agentsHome, INSTALL_DIRECTORY);
-  const legacyRoot = join(homes.codexHome, INSTALL_DIRECTORY);
-  const hasLegacy = assertDisjointRoots(installRoot, legacyRoot);
+  const { installRoot, legacyRoots } = candidateRoots(homes);
+  assertDisjointRootSet(installRoot, legacyRoots);
   const roots = skillRoots(homes);
   const hooksPath = join(homes.codexHome, "hooks.json");
   const packageJson = readJson(join(sourceRoot, "package.json"));
 
   const priorMarker = readManagedInstall(installRoot);
-  const legacyMarker = hasLegacy ? readOptionalMarker(legacyRoot, "migrate") : null;
+  const ownedLegacies = legacyRoots
+    .map((root) => ({ root, marker: readOptionalMarker(root, "migrate") }))
+    .filter((entry) => entry.marker);
   // Only marker-verified roots vouch for existing links. A link that merely
   // points into an absent canonical root proves nothing about ownership, so
   // it is refused by preflight rather than adopted and rewritten.
   const ownedRoots = [
     ...(priorMarker ? [installRoot] : []),
-    ...(legacyMarker ? [legacyRoot] : []),
+    ...ownedLegacies.map((entry) => entry.root),
   ];
 
   preflightSkillLinks(roots, ownedRoots);
   const priorLinks = captureManagedLinks(roots, ownedRoots);
-  const managedBefore = priorMarker !== null || legacyMarker !== null;
+  const managedBefore = ownedRoots.length > 0;
   const originalHooks = managedBefore ? parseHooks(hooksPath) : null;
   const cleanedHooks = managedBefore ? withoutPackageOwnedHooks(originalHooks) : null;
   const hooksChanged =
@@ -523,10 +562,9 @@ export function installSuite({
   // ambiguous state to refuse, not to plow through) and track what this
   // run actually parked or installed, so rollback only undoes its own moves.
   let previous;
-  let legacyParked;
+  const parkedLegacies = [];
   let hooksWritten = false;
   let hooksBackup = null;
-  let legacyParkedNow = false;
   let liveParked = false;
   let installed = false;
 
@@ -549,10 +587,11 @@ export function installSuite({
       }
     }
 
-    if (legacyMarker && pathExists(legacyRoot)) {
-      legacyParked = parkPath(legacyRoot, "previous");
-      renameSync(legacyRoot, legacyParked);
-      legacyParkedNow = true;
+    for (const { root } of ownedLegacies) {
+      if (!pathExists(root)) continue;
+      const parked = parkPath(root, "previous");
+      renameSync(root, parked);
+      parkedLegacies.push({ root, parked });
     }
     if (hooksChanged) {
       hooksBackup = writeHooks(hooksPath, cleanedHooks);
@@ -562,7 +601,9 @@ export function installSuite({
     removeManagedLinks(roots, [installRoot]);
     if (installed && pathExists(installRoot)) rmSync(installRoot, { recursive: true });
     if (liveParked && pathExists(previous)) renameSync(previous, installRoot);
-    if (legacyParkedNow && pathExists(legacyParked)) renameSync(legacyParked, legacyRoot);
+    for (const { root, parked } of parkedLegacies) {
+      if (!pathExists(root) && pathExists(parked)) renameSync(parked, root);
+    }
     for (const { linkPath, target } of priorLinks) {
       if (!pathExists(linkPath)) symlinkSync(target, linkPath, "dir");
     }
@@ -578,7 +619,8 @@ export function installSuite({
   // Post-commit garbage collection: the new bundle, links, and hooks are
   // already consistent, so a cleanup failure must never roll them back.
   const leftovers = [];
-  for (const stale of [previous, legacyParked].filter(Boolean)) {
+  const staleParked = [previous, ...parkedLegacies.map((entry) => entry.parked)];
+  for (const stale of staleParked.filter(Boolean)) {
     if (!pathExists(stale)) continue;
     try {
       rmSync(stale, { recursive: true });
@@ -594,25 +636,23 @@ export function installSuite({
     installRoot,
     skillRoots: roots,
     skills: SKILLS,
-    upgradedFrom: priorMarker?.version || legacyMarker?.version || null,
+    upgradedFrom: priorMarker?.version || ownedLegacies[0]?.marker.version || null,
     leftovers,
   };
 }
 
 export function uninstallSuite({ codexHome, agentsHome, claudeHome } = {}) {
   const homes = resolveHomes({ codexHome, agentsHome, claudeHome });
-  const installRoot = join(homes.agentsHome, INSTALL_DIRECTORY);
-  const legacyRoot = join(homes.codexHome, INSTALL_DIRECTORY);
-  const hasLegacy = assertDisjointRoots(installRoot, legacyRoot);
+  const { installRoot, legacyRoots } = candidateRoots(homes);
+  assertDisjointRootSet(installRoot, legacyRoots);
   const roots = skillRoots(homes);
   const hooksPath = join(homes.codexHome, "hooks.json");
   const removed = [];
 
   const marker = readManagedInstall(installRoot, "remove");
-  const legacyMarker = hasLegacy ? readOptionalMarker(legacyRoot, "remove") : null;
   const ownedRoots = [
     ...(marker ? [installRoot] : []),
-    ...(legacyMarker ? [legacyRoot] : []),
+    ...legacyRoots.filter((root) => readOptionalMarker(root, "remove")),
   ];
   if (ownedRoots.length === 0) return { ...homes, removed, leftovers: [] };
 
@@ -687,9 +727,8 @@ export function doctorSuite({
   sourceRoot = packageRoot,
 } = {}) {
   const homes = resolveHomes({ codexHome, agentsHome, claudeHome });
-  const installRoot = join(homes.agentsHome, INSTALL_DIRECTORY);
-  const legacyRoot = join(homes.codexHome, INSTALL_DIRECTORY);
-  const { hasLegacy, nested: nestedRoots } = legacyRelation(installRoot, legacyRoot);
+  const { installRoot, legacyRoots } = candidateRoots(homes);
+  const nested = nestedRootPair(installRoot, legacyRoots);
   const roots = skillRoots(homes);
   const hooksPath = join(homes.codexHome, "hooks.json");
   const expectedVersion = readJson(join(sourceRoot, "package.json")).version;
@@ -699,8 +738,8 @@ export function doctorSuite({
 
   check(
     "disjoint install roots",
-    !nestedRoots,
-    `canonical and legacy roots are nested: ${installRoot} and ${legacyRoot}`,
+    !nested,
+    nested && `canonical and legacy roots are nested: ${nested[0]} and ${nested[1]}`,
   );
 
   let marker = null;
@@ -719,26 +758,24 @@ export function doctorSuite({
     );
   }
 
-  let legacyMarker = null;
-  if (hasLegacy) {
+  const ownedLegacies = [];
+  for (const legacyRoot of legacyRoots) {
     try {
-      legacyMarker = readOptionalMarker(legacyRoot, "inspect");
+      const legacyMarker = readOptionalMarker(legacyRoot, "inspect");
+      if (legacyMarker) ownedLegacies.push(legacyRoot);
       check(
-        "legacy codex bundle",
+        `legacy bundle ${legacyRoot}`,
         legacyMarker === null,
         `managed legacy bundle remains (run install to migrate): ${legacyRoot}`,
       );
     } catch (error) {
-      check("legacy codex bundle", false, error.message);
+      check(`legacy bundle ${legacyRoot}`, false, error.message);
     }
   }
 
   // Retired links are claimed only against marker-verified roots; a link
   // into a preserved foreign directory is not ours to report.
-  const ownedRoots = [
-    ...(marker ? [installRoot] : []),
-    ...(hasLegacy && legacyMarker ? [legacyRoot] : []),
-  ];
+  const ownedRoots = [...(marker ? [installRoot] : []), ...ownedLegacies];
 
   for (const skillsRoot of roots) {
     for (const skill of SKILLS) {
@@ -759,7 +796,7 @@ export function doctorSuite({
     }
   }
 
-  if ((marker || legacyMarker) && pathExists(hooksPath)) {
+  if ((marker || ownedLegacies.length > 0) && pathExists(hooksPath)) {
     try {
       const config = parseHooks(hooksPath);
       const cleaned = withoutPackageOwnedHooks(config);
@@ -808,7 +845,7 @@ function parseArguments(arguments_) {
 function printHelp() {
   console.log(
     "Install the Compass, Relay, and Cairn skills for every local harness\n\n" +
-      "The managed bundle lives under ~/.agents/orchestration-skills; skill\n" +
+      "The managed bundle lives under ~/.agents/agent-skills; skill\n" +
       "links are created in ~/.agents/skills, $CODEX_HOME/skills, and\n" +
       "~/.claude/skills.\n\n" +
       "Usage:\n" +

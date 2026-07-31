@@ -120,7 +120,7 @@ test("fresh install links every harness skill root to one managed bundle", () =>
 
   assert.deepEqual(result.skills, currentSkills);
   assert.equal(result.upgradedFrom, null);
-  assert.equal(result.installRoot, join(homes.agentsHome, "orchestration-skills"));
+  assert.equal(result.installRoot, join(homes.agentsHome, "agent-skills"));
   for (const skillsRoot of allSkillRoots(homes)) {
     for (const skill of currentSkills) {
       const link = join(skillsRoot, skill);
@@ -135,7 +135,7 @@ test("fresh install links every harness skill root to one managed bundle", () =>
   assert.equal(existsSync(join(homes.codexHome, "hooks.json")), false);
   assert.deepEqual(
     readdirSync(result.installRoot).sort(),
-    [".codex-orchestration-install.json", ...currentSkills].sort(),
+    [".agent-skills-install.json", ...currentSkills].sort(),
   );
 });
 
@@ -161,7 +161,7 @@ test("managed v1 upgrade migrates the bundle and retires package hooks", () => {
   assert.equal(lstatSync(join(skillsRoot, "unrelated")).isSymbolicLink(), true);
   assert.deepEqual(
     readdirSync(result.installRoot).sort(),
-    [".codex-orchestration-install.json", ...currentSkills].sort(),
+    [".agent-skills-install.json", ...currentSkills].sort(),
   );
   const hooks = JSON.parse(
     readFileSync(join(homes.codexHome, "hooks.json"), "utf8"),
@@ -203,6 +203,45 @@ test("codex-only v3 install migrates into the agents bundle", () => {
   assert.equal(doctor.ok, true, JSON.stringify(doctor.problems));
 });
 
+test("pre-rename agents bundle migrates to the agent-skills root", () => {
+  const homes = temporaryHomes();
+  const legacyRoot = join(homes.agentsHome, "orchestration-skills");
+  for (const skill of currentSkills) {
+    cpSync(join(repositoryRoot, skill), join(legacyRoot, skill), { recursive: true });
+  }
+  writeFileSync(
+    join(legacyRoot, ".codex-orchestration-install.json"),
+    `${JSON.stringify({ package: "@dylanmccavitt/agent-skills", version: "1.1.0" })}\n`,
+  );
+  for (const skillsRoot of allSkillRoots(homes)) {
+    mkdirSync(skillsRoot, { recursive: true });
+    for (const skill of currentSkills) {
+      symlinkSync(join(legacyRoot, skill), join(skillsRoot, skill), "dir");
+    }
+  }
+
+  const result = installSuite({ ...homes, sourceRoot: repositoryRoot });
+
+  assert.equal(result.upgradedFrom, "1.1.0");
+  assert.equal(result.installRoot, join(homes.agentsHome, "agent-skills"));
+  assert.equal(existsSync(legacyRoot), false);
+  assert.deepEqual(result.leftovers, []);
+  for (const skillsRoot of allSkillRoots(homes)) {
+    for (const skill of currentSkills) {
+      assert.equal(
+        resolve(skillsRoot, readlinkSync(join(skillsRoot, skill))),
+        join(result.installRoot, skill),
+      );
+    }
+  }
+  assert.deepEqual(
+    readdirSync(result.installRoot).sort(),
+    [".agent-skills-install.json", ...currentSkills].sort(),
+  );
+  const doctor = doctorSuite({ ...homes, sourceRoot: repositoryRoot });
+  assert.equal(doctor.ok, true, JSON.stringify(doctor.problems));
+});
+
 test("upgrade preserves legacy names not owned by this package", () => {
   const homes = temporaryHomes();
   const { skillsRoot } = createManagedV1(homes.codexHome);
@@ -230,7 +269,7 @@ test("refuses to overwrite an unmanaged current skill in any harness root", () =
     /Refusing to replace existing skill/,
   );
   assert.equal(
-    existsSync(join(codexOwned.agentsHome, "orchestration-skills")),
+    existsSync(join(codexOwned.agentsHome, "agent-skills")),
     false,
   );
 
@@ -244,7 +283,7 @@ test("refuses to overwrite an unmanaged current skill in any harness root", () =
     /Refusing to replace existing skill/,
   );
   assert.equal(
-    existsSync(join(claudeOwned.agentsHome, "orchestration-skills")),
+    existsSync(join(claudeOwned.agentsHome, "agent-skills")),
     false,
   );
   assert.equal(existsSync(claudeOwned.agentsHome), false);
@@ -256,14 +295,14 @@ test("refuses a symlinked or unmarked install root", () => {
   const external = join(dirname(homes.codexHome), "external-install");
   mkdirSync(external);
   mkdirSync(homes.agentsHome, { recursive: true });
-  symlinkSync(external, join(homes.agentsHome, "orchestration-skills"), "dir");
+  symlinkSync(external, join(homes.agentsHome, "agent-skills"), "dir");
   assert.throws(
     () => installSuite({ ...homes, sourceRoot: repositoryRoot }),
     /Refusing symlinked install directory/,
   );
 
   const second = temporaryHomes();
-  mkdirSync(join(second.agentsHome, "orchestration-skills"), { recursive: true });
+  mkdirSync(join(second.agentsHome, "agent-skills"), { recursive: true });
   assert.throws(
     () => installSuite({ ...second, sourceRoot: repositoryRoot }),
     /Refusing to replace unmanaged directory/,
@@ -291,7 +330,7 @@ test("unsafe legacy state aborts install and uninstall; foreign state is tolerat
   assert.equal(symlinkedDoctor.ok, false);
   assert.equal(
     symlinkedDoctor.problems.some((problem) =>
-      problem.includes("legacy codex bundle"),
+      problem.includes("legacy bundle"),
     ),
     true,
   );
@@ -392,7 +431,7 @@ test("uninstall removes managed bundle and preserves unrelated state", () => {
     readdirSync(homes.agentsHome).some((name) => name.includes(".removing-")),
     false,
   );
-  assert.equal(existsSync(join(homes.agentsHome, "orchestration-skills")), false);
+  assert.equal(existsSync(join(homes.agentsHome, "agent-skills")), false);
   for (const skillsRoot of allSkillRoots(homes)) {
     for (const skill of currentSkills) {
       assert.equal(existsSync(join(skillsRoot, skill)), false);
@@ -420,7 +459,7 @@ test("uninstall preflights malformed hooks before removing skill links", () => {
   writeFileSync(join(homes.codexHome, "hooks.json"), "{malformed\n");
 
   assert.throws(() => uninstallSuite(homes), /JSON/);
-  assert.equal(existsSync(join(homes.agentsHome, "orchestration-skills")), true);
+  assert.equal(existsSync(join(homes.agentsHome, "agent-skills")), true);
   for (const skillsRoot of allSkillRoots(homes)) {
     for (const skill of currentSkills) {
       assert.equal(lstatSync(join(skillsRoot, skill)).isSymbolicLink(), true);
@@ -448,8 +487,8 @@ test("failed uninstall rolls the canonical bundle and links back", () => {
   }
   assert.throws(() => uninstallSuite(homes), /Refusing to park/);
 
-  const installRoot = join(homes.agentsHome, "orchestration-skills");
-  assert.equal(existsSync(join(installRoot, ".codex-orchestration-install.json")), true);
+  const installRoot = join(homes.agentsHome, "agent-skills");
+  assert.equal(existsSync(join(installRoot, ".agent-skills-install.json")), true);
   assert.equal(existsSync(legacyRoot), true);
   for (const skillsRoot of allSkillRoots(homes)) {
     for (const skill of currentSkills) {
@@ -625,13 +664,13 @@ test("symlink-aliased codex and agents homes are treated as one root", () => {
 
   const removal = uninstallSuite(aliased);
   assert.deepEqual(removal.leftovers, []);
-  assert.equal(existsSync(join(homes.agentsHome, "orchestration-skills")), false);
+  assert.equal(existsSync(join(homes.agentsHome, "agent-skills")), false);
 });
 
 test("stale park debris from a reused PID never breaks or replaces the live bundle", () => {
   const homes = temporaryHomes();
   installSuite({ ...homes, sourceRoot: repositoryRoot });
-  const installRoot = join(homes.agentsHome, "orchestration-skills");
+  const installRoot = join(homes.agentsHome, "agent-skills");
   const debris = `${installRoot}.previous-${process.pid}`;
   mkdirSync(debris, { recursive: true });
   writeFileSync(join(debris, "stale.txt"), "debris from an earlier crashed run\n");
@@ -729,7 +768,7 @@ test("dangling look-alike links are refused, not adopted, on fresh install", () 
   mkdirSync(skillsRoot, { recursive: true });
   // Points into the canonical namespace, but no marker vouches for it.
   symlinkSync(
-    join(homes.agentsHome, "orchestration-skills", "compass"),
+    join(homes.agentsHome, "agent-skills", "compass"),
     join(skillsRoot, "compass"),
     "dir",
   );
@@ -738,7 +777,7 @@ test("dangling look-alike links are refused, not adopted, on fresh install", () 
     () => installSuite({ ...homes, sourceRoot: repositoryRoot }),
     /Refusing to replace existing skill/,
   );
-  assert.equal(existsSync(join(homes.agentsHome, "orchestration-skills")), false);
+  assert.equal(existsSync(join(homes.agentsHome, "agent-skills")), false);
   assert.equal(lstatSync(join(skillsRoot, "compass")).isSymbolicLink(), true);
 });
 
@@ -777,7 +816,7 @@ test("doctor reports missing, tampered, and unmigrated installs", () => {
 
   installSuite({ ...homes, sourceRoot: repositoryRoot });
   writeFileSync(
-    join(homes.agentsHome, "orchestration-skills", ".codex-orchestration-install.json"),
+    join(homes.agentsHome, "agent-skills", ".agent-skills-install.json"),
     `${JSON.stringify({ package: "@dylanmccavitt/agent-skills", version: "0.0.0" })}\n`,
   );
   const tampered = doctorSuite({ ...homes, sourceRoot: repositoryRoot });
