@@ -122,6 +122,8 @@ test("scout keeps planning bounded and evolves selected plans through the tree",
   const scout = readFileSync(resolve(root, "scout", "SKILL.md"), "utf8");
   assert.match(scout, /scope → shape → data → edges → seams → done-looks-like/);
   assert.match(scout, /one compact question per turn/i);
+  assert.match(scout, /one read-only advisor/i);
+  assert.match(scout, /resume the matching shelf record/i);
   assert.match(scout, /decision-shelf propose/);
   assert.match(scout, /decision-shelf checkpoint/);
   assert.match(scout, /decision-shelf reject/);

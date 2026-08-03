@@ -13,13 +13,13 @@ Move in order through `scope → shape → data → edges → seams → done-loo
 
 After each answer show: `✓N decided · ● <territory> · ○ <remaining>`.
 
-At each territory border, ask a read-only advisor to catch missed questions or assumptions when the harness supports one. It may add at most two questions. Continue without it when unavailable.
+After the sweep, ask one read-only advisor to catch missed questions or assumptions when the harness supports one. It may add at most two questions. Continue without it when unavailable.
 
 ## Board and brief
 
 When artifacts are available, keep one board updated with the sweep and one-line decision cards; chat remains authoritative. End only after all territories close, with numbered decisions, spikes, and Now / Next / Later.
 
-Create one shelf record with `decision-shelf new`, fill its criteria and non-goals, set it `selected`, and return exactly one verified locator line: `Record: <absolute path>` or `Record: none`. Its embedded plan tree is the durable view; `decision-shelf view <record>` prints the stable path.
+Use `decision-shelf find` to resume the matching shelf record. Create one with `decision-shelf new` only when none exists. Fill its criteria and non-goals, set it `selected`, and return exactly one verified locator line: `Record: <absolute path>` or `Record: none`. Its embedded plan tree is the durable view; `decision-shelf view <record>` prints the stable path.
 
 ## Evolve the plan
 
