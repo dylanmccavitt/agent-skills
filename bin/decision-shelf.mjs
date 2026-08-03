@@ -121,7 +121,8 @@ function recordSummary(path) {
   const text = readFileSync(path, "utf8");
   const status = text.match(/data-status="([^"]*)"/)?.[1] || "unknown";
   const updated = text.match(/data-updated="([^"]*)"/)?.[1] || "";
-  const title = text.match(/<h1>([^<]*)<\/h1>/)?.[1] || basename(path);
+  const encodedTitle = text.match(/<h1>([^<]*)<\/h1>/)?.[1];
+  const title = encodedTitle ? decodeHtmlText(encodedTitle) : basename(path);
   // Only an actual successor anchor in the record's header counts as
   // linked — a hand-edited label with empty or plain-text content, or a
   // row misplaced outside the header, still leaves the record stale.
@@ -273,7 +274,7 @@ function commandList(shelf, project, { all = false, stale = false } = {}) {
 function commandNew(shelf, project, question, cwd = process.cwd()) {
   if (!question) throw new Error('provide the decision question: new "<question>"');
   const slug = slugify(question);
-  const directory = join(shelf, project);
+  const directory = assertProjectRoot(shelf, project);
   const existing = listRecords(directory).filter((path) =>
     basename(path).includes(slug),
   );
@@ -292,13 +293,20 @@ function commandNew(shelf, project, question, cwd = process.cwd()) {
   // The template marks CLI-filled slots with delimited {{TOKEN}} placeholders
   // so no replacement can collide with the prose placeholders left for hand
   // editing (TITLES OR NONE, NONE OR GIT SHA, the YYYY-MM-DD evidence cell).
-  // The question is user text, so it is substituted last and never rescanned.
+  // Every CLI-supplied value is HTML-escaped before substitution so it is
+  // safe in both text nodes and double-quoted attributes; the question is
+  // substituted last and never rescanned.
   const record = readFileSync(TEMPLATE, "utf8")
-    .replaceAll("{{CREATED}}", today)
-    .replaceAll("{{REPOSITORY}}", repository)
-    .replaceAll("{{BASE_HEAD}}", head)
-    .replaceAll("{{QUESTION}}", question);
+    .replaceAll("{{CREATED}}", escapeHtml(today))
+    .replaceAll("{{REPOSITORY}}", escapeHtml(repository))
+    .replaceAll("{{BASE_HEAD}}", escapeHtml(head))
+    .replaceAll("{{QUESTION}}", escapeHtml(question));
+  // All failure-prone source reads and record construction happen before the
+  // first mutation. A physical recheck follows creation. On a concurrent path
+  // replacement or write failure, preserve directories conservatively: path
+  // APIs cannot prove atomic mkdir ownership strongly enough for safe cleanup.
   mkdirSync(directory, { recursive: true });
+  assertProjectRoot(shelf, project);
   writeFileSync(path, record, { flag: "wx" });
   console.log(path);
 }
@@ -535,6 +543,114 @@ function physicallyInside(base, directory) {
   return real === realBase || real.startsWith(`${realBase}${sep}`);
 }
 
+// CLI-filled template slots land in both text nodes and double-quoted
+// attributes. Escape once for both contexts so user/repo text cannot open
+// tags or break out of attribute quotes.
+export function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+// Decode exactly the entities emitted by escapeHtml before re-escaping parsed
+// record text into a new HTML context. The single regex pass intentionally
+// avoids recursively decoding hand-written entity text.
+function decodeHtmlText(value) {
+  const entities = {
+    amp: "&",
+    lt: "<",
+    gt: ">",
+    quot: '"',
+    "#39": "'",
+  };
+  return String(value).replace(/&(amp|lt|gt|quot|#39);/g, (entity, name) =>
+    Object.hasOwn(entities, name) ? entities[name] : entity,
+  );
+}
+
+// A project folder is package-managed structure, not an arbitrary indirection.
+// Reject a symlinked/non-directory project root and prove its physical path is
+// still under the configured shelf before any record is read or written.
+function assertProjectRoot(shelf, project) {
+  const shelfRoot = resolve(shelf);
+  const projectRoot = resolve(shelfRoot, project);
+  if (projectRoot === shelfRoot || !projectRoot.startsWith(`${shelfRoot}${sep}`)) {
+    throw new Error(`project folder is outside the decision shelf — refusing:\n${projectRoot}`);
+  }
+  let realShelf = null;
+  if (existsSync(shelfRoot)) {
+    try {
+      realShelf = realpathSync(shelfRoot);
+      if (!lstatSync(realShelf).isDirectory()) {
+        throw new Error("not a directory");
+      }
+    } catch {
+      throw new Error(`decision shelf must resolve to a directory — refusing:\n${shelfRoot}`);
+    }
+  }
+  if (!existsSync(projectRoot)) return projectRoot;
+  let stat;
+  let realProject;
+  try {
+    stat = lstatSync(projectRoot);
+    realShelf ||= realpathSync(shelfRoot);
+    realProject = realpathSync(projectRoot);
+  } catch {
+    throw new Error(`project folder must resolve under the decision shelf — refusing:\n${projectRoot}`);
+  }
+  if (stat.isSymbolicLink() || !stat.isDirectory()) {
+    throw new Error(`project folder must be a real directory, not a symlink — refusing:\n${projectRoot}`);
+  }
+  if (realProject === realShelf || !realProject.startsWith(`${realShelf}${sep}`)) {
+    throw new Error(`project folder is outside the decision shelf — refusing:\n${projectRoot}`);
+  }
+  return projectRoot;
+}
+
+// Mutation commands may accept a basename needle or a full path, but every
+// accepted record must be a regular .html file whose physical path stays
+// under this project's shelf folder — absolute paths and symlink escapes
+// are refused before any read or write.
+function assertProjectRecord(shelf, project, recordPath) {
+  const projectRoot = assertProjectRoot(shelf, project);
+  let stat;
+  try {
+    stat = lstatSync(recordPath);
+  } catch {
+    throw new Error(`record not found — refusing:\n${recordPath}`);
+  }
+  if (stat.isSymbolicLink() || !stat.isFile()) {
+    throw new Error(
+      `record path must be a regular HTML file on the project shelf — refusing:\n${recordPath}`,
+    );
+  }
+  let real;
+  let realProject;
+  try {
+    real = realpathSync(recordPath);
+    realProject = realpathSync(projectRoot);
+  } catch {
+    throw new Error(
+      `record path must resolve under this project's shelf — refusing:\n${recordPath}`,
+    );
+  }
+  if (real !== realProject && !real.startsWith(`${realProject}${sep}`)) {
+    throw new Error(
+      `record path is outside this project's shelf — refusing:\n${recordPath}`,
+    );
+  }
+  if (!basename(real).endsWith(".html")) {
+    throw new Error(`record path must end in .html — refusing:\n${recordPath}`);
+  }
+  // Keep the caller's spelling (after lexical resolve). realpath is only for
+  // the containment proof — rewriting /var to /private/var would break path
+  // equality with paths printed by `new`.
+  return resolve(recordPath);
+}
+
 export function scaffoldBridgeTests(recordPath, criteria, cwd = process.cwd()) {
   const slug = basename(recordPath, ".html").replace(/^\d{4}-\d{2}-\d{2}-/, "");
   const fileName = `bridge-${slug}.test.mjs`;
@@ -544,7 +660,7 @@ export function scaffoldBridgeTests(recordPath, criteria, cwd = process.cwd()) {
   const testPath = join(cwd, directory, fileName);
   const body = [
     `// Executable spec scaffolded from the decision record:`,
-    `//   ${recordPath}`,
+    `//   ${JSON.stringify(recordPath).replaceAll("\u2028", "\\u2028").replaceAll("\u2029", "\\u2029")}`,
     `// Each test states one acceptance criterion and fails until it is`,
     `// verified with a real assertion. Replace assert.fail, keep the name.`,
     "",
@@ -567,7 +683,9 @@ export function scaffoldBridgeTests(recordPath, criteria, cwd = process.cwd()) {
 
 function resolveRecord(shelf, project, query, usage) {
   if (!query) throw new Error(`provide a record path or name: ${usage}`);
-  if (query.endsWith(".html") && existsSync(query)) return resolve(query);
+  if (query.endsWith(".html") && existsSync(query)) {
+    return assertProjectRecord(shelf, project, resolve(query));
+  }
   const needle = query.toLowerCase();
   const matches = listRecords(join(shelf, project)).filter((path) =>
     basename(path).toLowerCase().includes(needle),
@@ -578,7 +696,7 @@ function resolveRecord(shelf, project, query, usage) {
   if (matches.length > 1) {
     throw new Error(`"${query}" matches several records — use a full path:\n${matches.join("\n")}`);
   }
-  return matches[0];
+  return assertProjectRecord(shelf, project, matches[0]);
 }
 
 // Records are hand-edited HTML, so every pattern a mutation will touch is
@@ -675,7 +793,7 @@ function commandSupersede(shelf, project, rest) {
   }
   const successor = recordSummary(newPath);
   const href = dirname(oldPath) === dirname(newPath) ? basename(newPath) : newPath;
-  const anchor = `<a href="${href}">${successor.title}</a>`;
+  const anchor = `<a href="${escapeHtml(href)}">${escapeHtml(successor.title)}</a>`;
   const transformed = statusTransforms(text, "superseded", oldPath);
   const transformedHeader = transformed.match(/<header>[\s\S]*?<\/header>/)[0];
   const patched = existing
