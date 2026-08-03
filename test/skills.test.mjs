@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
+  chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
+  linkSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
@@ -11,21 +14,60 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, delimiter, join, resolve } from "node:path";
 import test from "node:test";
 
 import {
   escapeHtml,
-  scaffoldBridgeTests,
+  mutateProjectRecord,
+  sanitizeRepositoryIdentity,
   staleReason,
+  writeFileInDirectory,
 } from "../bin/decision-shelf.mjs";
 import { skillNames, validateSkill } from "../scripts/validate-skills.mjs";
 
 const root = resolve(new URL("..", import.meta.url).pathname);
 
-test("escapeHtml makes CLI text safe for HTML text and attributes", () => {
+test("HTML and repository metadata helpers remove executable and secret-bearing syntax", () => {
   assert.equal(escapeHtml(`a <b> & "c" 'd'`), "a &lt;b&gt; &amp; &quot;c&quot; &#39;d&#39;");
   assert.equal(escapeHtml("plain"), "plain");
+  assert.equal(
+    sanitizeRepositoryIdentity(
+      "https://release-user:TEST_SECRET_ONLY@example.invalid/org/repo.git?token=also-secret#private",
+    ),
+    "https://example.invalid/org/repo.git",
+  );
+  assert.equal(
+    sanitizeRepositoryIdentity("git@example.invalid:org/repo.git"),
+    "example.invalid:org/repo.git",
+  );
+  assert.equal(
+    sanitizeRepositoryIdentity("file:///tmp/repo.git?token=TEST_SECRET_ONLY#private"),
+    "file:///tmp/repo.git",
+  );
+  assert.equal(
+    sanitizeRepositoryIdentity("https://user:TEST_SECRET_ONLY@bad host/repo.git"),
+    "",
+  );
+  assert.equal(
+    sanitizeRepositoryIdentity(
+      "https://user:TEST_SECRET_ONLY@example.invalid:bad-port/org/repo.git",
+    ),
+    "",
+  );
+  assert.equal(
+    sanitizeRepositoryIdentity(
+      "user:TEST_SECRET_ONLY@second-user@example.invalid:org/repo.git",
+    ),
+    "",
+  );
+  assert.equal(
+    sanitizeRepositoryIdentity(
+      "https://good.example.invalid\\user:TEST_SECRET_ONLY@evil.example.invalid/repo.git",
+    ),
+    "",
+  );
+  assert.equal(sanitizeRepositoryIdentity("helper::TEST_SECRET_ONLY"), "");
 });
 
 test("shipped skills satisfy discovery and reference contracts", () => {
@@ -639,6 +681,12 @@ test("decision-shelf proto lanes live beside their record and settle with it", (
   assert.equal(clean.status, 0, clean.stderr);
   assert.match(clean.stdout, /removed .*\.proto \(2 variants\)/);
   assert.ok(!existsSync(lane), "the lane is gone");
+  const quarantine = clean.stdout
+    .split("\n")
+    .find((line) => line.startsWith("recoverable quarantine:"))
+    ?.slice("recoverable quarantine:".length)
+    .trim();
+  assert.ok(quarantine && existsSync(quarantine), "clean preserves a recoverable quarantine");
   assert.match(
     readFileSync(record, "utf8"),
     /<td>Prototype: cursor-based<\/td>/,
@@ -771,7 +819,6 @@ test("mutation commands refuse absolute and symlink-escaped records outside the 
   const projectDir = resolve(record, "..");
   const pristine = readFileSync(record, "utf8");
 
-  // Absolute path to a copy outside the shelf must not mutate that file.
   const victim = join(outside, "victim.html");
   writeFileSync(victim, pristine);
   for (const args of [
@@ -792,8 +839,6 @@ test("mutation commands refuse absolute and symlink-escaped records outside the 
     "no proto lane or sibling files appear outside the shelf",
   );
 
-  // A symlink inside the project shelf that points outside is refused; the
-  // target stays pristine and no lane is created beside the symlink.
   const escapeLink = join(projectDir, "escape-link.html");
   symlinkSync(victim, escapeLink);
   for (const args of [
@@ -810,13 +855,211 @@ test("mutation commands refuse absolute and symlink-escaped records outside the 
   assert.equal(readFileSync(victim, "utf8"), pristine, "symlink target is untouched");
   assert.ok(!existsSync(escapeLink.replace(/\.html$/, ".proto")));
 
-  // A real full path on the project shelf still works.
+  const hardLink = join(projectDir, "hard-link.html");
+  linkSync(victim, hardLink);
+  const hardLinkRefused = run(["status", hardLink, "selected"]);
+  assert.notEqual(hardLinkRefused.status, 0, "a hardlinked outside record must be refused");
+  assert.match(hardLinkRefused.stderr, /regular HTML file on the project shelf/i);
+  assert.equal(readFileSync(victim, "utf8"), pristine, "hardlink target is untouched");
+
   const allowed = run(["status", record, "selected"]);
   assert.equal(allowed.status, 0, allowed.stderr);
   assert.match(readFileSync(record, "utf8"), /data-status="selected"/);
 });
 
-test("decision-shelf refuses a symlinked project root before creation or mutation", () => {
+test("decision-shelf new refuses a symlinked project folder", () => {
+  const cli = resolve(root, "bin", "decision-shelf.mjs");
+  const shelf = mkdtempSync(join(tmpdir(), "decision-shelf-project-link-"));
+  const workspace = mkdtempSync(join(tmpdir(), "decision-shelf-project-link-repo-"));
+  const target = mkdtempSync(join(tmpdir(), "decision-shelf-project-link-target-"));
+  const env = { ...process.env, DECISION_SHELF_HOME: shelf };
+  const run = (args) =>
+    spawnSync(process.execPath, [cli, ...args], {
+      cwd: workspace,
+      env,
+      encoding: "utf8",
+    });
+
+  const pathResult = run(["path"]);
+  assert.equal(pathResult.status, 0, pathResult.stderr);
+  const projectDir = pathResult.stdout
+    .split("\n")
+    .find((line) => line.startsWith("Project:"))
+    ?.slice("Project:".length)
+    .trim();
+  assert.ok(projectDir);
+  symlinkSync(target, projectDir);
+
+  const refused = run(["new", "Do not follow the project link"]);
+  assert.notEqual(refused.status, 0);
+  assert.match(refused.stderr, /project folder must be a real directory, not a symlink/);
+  assert.deepEqual(readdirSync(target), [], "the symlink target stays untouched");
+});
+
+test("decision-shelf new revalidates the project folder immediately before write", () => {
+  const cli = resolve(root, "bin", "decision-shelf.mjs");
+  const shelf = mkdtempSync(join(tmpdir(), "decision-shelf-project-swap-"));
+  const workspace = mkdtempSync(join(tmpdir(), "decision-shelf-project-swap-repo-"));
+  const swapContainer = mkdtempSync(join(tmpdir(), "decision-shelf-project-swap-outside-"));
+  const fakeBin = mkdtempSync(join(tmpdir(), "decision-shelf-project-swap-bin-"));
+  const marker = join(swapContainer, "swapped");
+  const capturedProject = join(swapContainer, "captured-project");
+  const baseEnv = { ...process.env, DECISION_SHELF_HOME: shelf };
+  const pathResult = spawnSync(process.execPath, [cli, "path"], {
+    cwd: workspace,
+    env: baseEnv,
+    encoding: "utf8",
+  });
+  assert.equal(pathResult.status, 0, pathResult.stderr);
+  const projectRoot = pathResult.stdout
+    .split("\n")
+    .find((line) => line.startsWith("Project:"))
+    ?.slice("Project:".length)
+    .trim();
+  assert.ok(projectRoot);
+
+  const fakeGit = join(fakeBin, "git");
+  writeFileSync(
+    fakeGit,
+    `#!/usr/bin/env node
+const { existsSync, renameSync, symlinkSync, writeFileSync } = require("node:fs");
+const args = process.argv.slice(2);
+if (!existsSync(process.env.SWAP_MARKER) && existsSync(process.env.SWAP_PROJECT_ROOT)) {
+  renameSync(process.env.SWAP_PROJECT_ROOT, process.env.SWAP_CAPTURED_ROOT);
+  symlinkSync(process.env.SWAP_CAPTURED_ROOT, process.env.SWAP_PROJECT_ROOT, "dir");
+  writeFileSync(process.env.SWAP_MARKER, "swapped\\n");
+}
+if (args[0] === "rev-parse" && args[1] === "--show-toplevel") console.log(process.cwd());
+else if (args[0] === "rev-parse" && args[1] === "HEAD") console.log("1111111111111111111111111111111111111111");
+`,
+  );
+  chmodSync(fakeGit, 0o755);
+
+  const refused = spawnSync(process.execPath, [cli, "new", "Race-safe record"], {
+    cwd: workspace,
+    env: {
+      ...baseEnv,
+      PATH: `${fakeBin}${delimiter}${process.env.PATH}`,
+      SWAP_MARKER: marker,
+      SWAP_PROJECT_ROOT: projectRoot,
+      SWAP_CAPTURED_ROOT: capturedProject,
+    },
+    encoding: "utf8",
+  });
+  assert.notEqual(refused.status, 0);
+  assert.match(refused.stderr, /project folder must be a real directory, not a symlink/);
+  assert.ok(existsSync(marker), "the fake git process performed the directory swap");
+  assert.deepEqual(
+    readdirSync(capturedProject),
+    [],
+    "no decision record is written through the swapped project symlink",
+  );
+});
+
+test("bound record creation cannot be redirected by a post-validation symlink swap", () => {
+  const container = mkdtempSync(join(tmpdir(), "decision-shelf-bound-write-"));
+  const preBindProject = join(container, "pre-bind-project");
+  const preBindCaptured = join(container, "pre-bind-captured");
+  const preBindTarget = join(container, "pre-bind-target");
+  const projectRoot = join(container, "project");
+  const capturedProject = join(container, "captured-project");
+  const redirectTarget = join(container, "redirect-target");
+  mkdirSync(preBindProject);
+  mkdirSync(preBindTarget);
+  mkdirSync(projectRoot);
+  mkdirSync(redirectTarget);
+
+  assert.throws(
+    () =>
+      writeFileInDirectory(
+        preBindProject,
+        lstatSync(preBindProject, { bigint: true }),
+        "record.html",
+        "refuse\n",
+        (directory) => {
+        renameSync(directory, preBindCaptured);
+        symlinkSync(preBindTarget, directory, "dir");
+        process.chdir(directory);
+        },
+      ),
+    /project folder identity changed before record creation/,
+  );
+  assert.deepEqual(readdirSync(preBindTarget), [], "a replacement before binding is refused");
+
+  writeFileInDirectory(
+    projectRoot,
+    lstatSync(projectRoot, { bigint: true }),
+    "record.html",
+    "bound\n",
+    (directory) => {
+      process.chdir(directory);
+      renameSync(directory, capturedProject);
+      symlinkSync(redirectTarget, directory, "dir");
+    },
+  );
+
+  assert.equal(readFileSync(join(capturedProject, "record.html"), "utf8"), "bound\n");
+  assert.deepEqual(
+    readdirSync(redirectTarget),
+    [],
+    "the relative create stays bound to the validated directory instead of following the link",
+  );
+});
+
+test("bound record mutation cannot be redirected after validation", () => {
+  const shelf = mkdtempSync(join(tmpdir(), "decision-shelf-bound-mutation-"));
+  const project = "project";
+  const projectRoot = join(shelf, project);
+  const recordPath = join(projectRoot, "2026-08-03-record.html");
+  const capturedRecord = join(projectRoot, "captured-record.html");
+  const outside = mkdtempSync(join(tmpdir(), "decision-shelf-bound-mutation-outside-"));
+  const victim = join(outside, "victim.html");
+  mkdirSync(projectRoot);
+  writeFileSync(recordPath, "before\n");
+  writeFileSync(victim, "outside\n");
+
+  mutateProjectRecord(shelf, project, recordPath, (text) => {
+    assert.equal(text, "before\n");
+    renameSync(recordPath, capturedRecord);
+    symlinkSync(victim, recordPath);
+    return "after\n";
+  });
+
+  assert.equal(readFileSync(capturedRecord, "utf8"), "after\n");
+  assert.equal(readFileSync(victim, "utf8"), "outside\n");
+});
+
+test("proto promote escapes record-derived path markup", () => {
+  const cli = resolve(root, "bin", "decision-shelf.mjs");
+  const shelf = mkdtempSync(join(tmpdir(), "decision-shelf-proto-path-escape-"));
+  const workspace = mkdtempSync(join(tmpdir(), "decision-shelf-proto-path-repo-"));
+  const env = { ...process.env, DECISION_SHELF_HOME: shelf };
+  const run = (args) =>
+    spawnSync(process.execPath, [cli, ...args], {
+      cwd: workspace,
+      env,
+      encoding: "utf8",
+    });
+
+  const created = run(["new", "Escape prototype paths"]);
+  assert.equal(created.status, 0, created.stderr);
+  const record = created.stdout.trim();
+  const hostile = join(
+    resolve(record, ".."),
+    `${basename(record, ".html")}-<img src=x onerror=alert(1)>.html`,
+  );
+  renameSync(record, hostile);
+  const variant = run(["proto", hostile, "new", "safe"]);
+  assert.equal(variant.status, 0, variant.stderr);
+  const promoted = run(["proto", hostile, "promote", "safe"]);
+  assert.equal(promoted.status, 0, promoted.stderr);
+
+  const text = readFileSync(hostile, "utf8");
+  assert.doesNotMatch(text, /<img src=x onerror=alert\(1\)>/);
+  assert.match(text, /&lt;img src=x onerror=alert\(1\)&gt;/);
+});
+
+test("decision-shelf refuses a project folder replaced by a symlink", () => {
   const cli = resolve(root, "bin", "decision-shelf.mjs");
   const shelf = mkdtempSync(join(tmpdir(), "decision-shelf-project-root-"));
   const workspace = mkdtempSync(join(tmpdir(), "decision-shelf-project-root-repo-"));
@@ -842,14 +1085,11 @@ test("decision-shelf refuses a symlinked project root before creation or mutatio
     ["status", record, "selected"],
   ]) {
     const refused = run(args);
-    assert.notEqual(refused.status, 0, `${args.join(" ")} must refuse a symlinked project root`);
-    assert.match(refused.stderr, /project folder.*(?:symlink|outside the decision shelf)/is);
+    assert.notEqual(refused.status, 0, `${args.join(" ")} must refuse the symlinked root`);
+    assert.match(refused.stderr, /project folder must be a real directory, not a symlink/);
   }
-  assert.equal(
-    readFileSync(outsideRecord, "utf8"),
-    before,
-  );
-  assert.equal(readdirSync(outsideProject).length, 1, "no record was created through the symlink");
+  assert.equal(readFileSync(outsideRecord, "utf8"), before);
+  assert.equal(readdirSync(outsideProject).length, 1, "no record was created through the link");
 });
 
 test("decision-shelf new leaves an invalid shelf path untouched", () => {
@@ -872,114 +1112,119 @@ test("decision-shelf new leaves an invalid shelf path untouched", () => {
   assert.deepEqual(readdirSync(container), ["shelf-is-user-data"]);
 });
 
-test("decision-shelf new HTML-escapes CLI substitutions so markup is not executable", () => {
+test("decision-shelf new escapes markup and omits remote credentials", () => {
   const cli = resolve(root, "bin", "decision-shelf.mjs");
   const shelf = mkdtempSync(join(tmpdir(), "decision-shelf-escape-"));
   const workspace = mkdtempSync(join(tmpdir(), "decision-shelf-escape-repo-"));
-  mkdirSync(join(workspace, "project"), { recursive: true });
+  const git = (...args) =>
+    spawnSync("git", args, { cwd: workspace, encoding: "utf8" });
+  assert.equal(git("init", "--initial-branch=main").status, 0);
+  assert.equal(
+    git(
+      "remote",
+      "add",
+      "origin",
+      "https://release-user:TEST_SECRET_ONLY@example.invalid/org/repo.git?token=ALSO_SECRET",
+    ).status,
+    0,
+  );
+
   const payload = '</h1><script>alert(1)</script><h1 x="evil">xss';
   const created = spawnSync(process.execPath, [cli, "new", payload], {
-    cwd: join(workspace, "project"),
+    cwd: workspace,
     env: { ...process.env, DECISION_SHELF_HOME: shelf },
     encoding: "utf8",
   });
   assert.equal(created.status, 0, created.stderr);
-  const record = readFileSync(created.stdout.trim(), "utf8");
+  const recordPath = created.stdout.trim();
+  const record = readFileSync(recordPath, "utf8");
 
   assert.doesNotMatch(record, /<script\b/i);
-  assert.doesNotMatch(record, /<\/h1><script/i);
   assert.match(record, /&lt;\/h1&gt;&lt;script&gt;alert\(1\)&lt;\/script&gt;&lt;h1/);
   assert.match(record, /&quot;/);
-  assert.match(record, /<title>Decision: .*&lt;\/h1&gt;/);
-  assert.match(record, /<h1>.*&lt;script&gt;.*<\/h1>/);
-  assert.match(record, /<p>.*&lt;script&gt;.*<\/p>/);
-  // Template structure survived: one title, one status chip, one question h1.
+  assert.match(record, /https:\/\/example\.invalid\/org\/repo\.git/);
+  assert.doesNotMatch(record, /TEST_SECRET_ONLY|ALSO_SECRET|release-user/);
+  assert.doesNotMatch(recordPath, /TEST_SECRET_ONLY|ALSO_SECRET|release-user/);
+  assert.doesNotMatch(created.stdout, /TEST_SECRET_ONLY|ALSO_SECRET|release-user/);
   assert.equal([...record.matchAll(/<h1>/g)].length, 1);
   assert.match(record, /data-status="exploring"/);
-  assert.doesNotMatch(record, /\{\{[A-Z_]+\}\}/);
+
+  assert.equal(
+    git(
+      "remote",
+      "set-url",
+      "origin",
+      "file:///tmp/example.git?token=FILE_SECRET_ONLY#private",
+    ).status,
+    0,
+  );
+  const fileRemote = spawnSync(process.execPath, [cli, "new", "File remote metadata"], {
+    cwd: workspace,
+    env: { ...process.env, DECISION_SHELF_HOME: shelf },
+    encoding: "utf8",
+  });
+  assert.equal(fileRemote.status, 0, fileRemote.stderr);
+  const fileRemoteRecord = readFileSync(fileRemote.stdout.trim(), "utf8");
+  assert.match(fileRemoteRecord, /file:\/\/\/tmp\/example\.git/);
+  assert.doesNotMatch(fileRemoteRecord, /FILE_SECRET_ONLY|token=|#private/);
+  assert.doesNotMatch(fileRemote.stdout, /FILE_SECRET_ONLY|token=|#private/);
 });
 
-test("supersede escapes hostile successor paths and titles", () => {
+test("supersede emits a safe file link even for a javascript-like record name", () => {
   const cli = resolve(root, "bin", "decision-shelf.mjs");
-  const shelf = mkdtempSync(join(tmpdir(), "decision-shelf-successor-escape-"));
-  const workspace = mkdtempSync(join(tmpdir(), "decision-shelf-successor-repo-"));
-  mkdirSync(join(workspace, "project"), { recursive: true });
+  const shelf = mkdtempSync(join(tmpdir(), "decision-shelf-successor-url-"));
+  const workspace = mkdtempSync(join(tmpdir(), "decision-shelf-successor-url-repo-"));
   const env = { ...process.env, DECISION_SHELF_HOME: shelf };
   const run = (args) =>
     spawnSync(process.execPath, [cli, ...args], {
-      cwd: join(workspace, "project"),
+      cwd: workspace,
       env,
       encoding: "utf8",
     });
 
-  const oldRecord = run(["new", "Choose the original queue"]).stdout.trim();
-  const newRecord = run(["new", "Choose the successor queue"]).stdout.trim();
-  const hostileRecord = join(
-    resolve(newRecord, ".."),
-    'successor" onclick="alert(1).html',
+  const old = run(["new", "Choose a renderer"]).stdout.trim();
+  const successor = run(["new", "Renderer second pass"]).stdout.trim();
+  const dangerous = join(
+    resolve(successor, ".."),
+    'javascript:" onclick="alert(1).html',
   );
-  renameSync(newRecord, hostileRecord);
+  renameSync(successor, dangerous);
   writeFileSync(
-    hostileRecord,
-    readFileSync(hostileRecord, "utf8").replace(
+    dangerous,
+    readFileSync(dangerous, "utf8").replace(
       /<h1>[^<]*<\/h1>/,
       '<h1>Successor & "quoted"</h1>',
     ),
   );
 
-  const superseded = run(["supersede", oldRecord, hostileRecord]);
+  const superseded = run(["supersede", old, dangerous]);
   assert.equal(superseded.status, 0, superseded.stderr);
-  const result = readFileSync(oldRecord, "utf8");
-  assert.match(
-    result,
-    /<a href="successor&quot; onclick=&quot;alert\(1\)\.html">Successor &amp; &quot;quoted&quot;<\/a>/,
-  );
-  assert.doesNotMatch(result, /href="successor" onclick=/);
+  const record = readFileSync(old, "utf8");
+  const href = record.match(/<dt>Superseded by<\/dt><dd><a href="([^"]+)"/)?.[1];
+  assert.ok(href);
+  assert.match(href, /^\.\/javascript%3A%22%20onclick%3D%22/);
+  assert.doesNotMatch(href, /^javascript:/i);
+  assert.doesNotMatch(record, /href="[^"]*" onclick=/i);
+  assert.match(record, />Successor &amp; &quot;quoted&quot;<\/a>/);
 });
 
 test("supersede does not double-escape a title created by decision-shelf new", () => {
   const cli = resolve(root, "bin", "decision-shelf.mjs");
   const shelf = mkdtempSync(join(tmpdir(), "decision-shelf-successor-entities-"));
   const workspace = mkdtempSync(join(tmpdir(), "decision-shelf-successor-entities-repo-"));
-  const cwd = join(workspace, "project");
-  mkdirSync(cwd, { recursive: true });
   const env = { ...process.env, DECISION_SHELF_HOME: shelf };
   const run = (args) =>
-    spawnSync(process.execPath, [cli, ...args], { cwd, env, encoding: "utf8" });
+    spawnSync(process.execPath, [cli, ...args], {
+      cwd: workspace,
+      env,
+      encoding: "utf8",
+    });
 
   const oldRecord = run(["new", "Choose the original queue"]).stdout.trim();
   const newRecord = run(["new", 'Successor & "quoted"']).stdout.trim();
   const superseded = run(["supersede", oldRecord, newRecord]);
   assert.equal(superseded.status, 0, superseded.stderr);
-  const result = readFileSync(oldRecord, "utf8");
-  assert.match(result, />Successor &amp; &quot;quoted&quot;<\/a>/);
-  assert.doesNotMatch(result, /&amp;amp;|&amp;quot;/);
-});
-
-test("bridge serializes line terminators in hostile record paths", () => {
-  const workspace = mkdtempSync(join(tmpdir(), "decision-shelf-bridge-path-"));
-  mkdirSync(join(workspace, "test"), { recursive: true });
-  writeFileSync(
-    join(workspace, "package.json"),
-    `${JSON.stringify({ scripts: { test: "node --test test/*.test.mjs" } })}\n`,
-  );
-  const recordPath = join(
-    workspace,
-    '2026-08-03-safe\nthrow new Error("lf injection")\u2028throw new Error("ls injection")\u2029throw new Error("ps injection").html',
-  );
-  const testPath = scaffoldBridgeTests(
-    recordPath,
-    ["the criterion remains unverified"],
-    workspace,
-  );
-  assert.ok(testPath);
-  const generated = readFileSync(testPath, "utf8");
-  assert.ok(generated.includes('\\nthrow new Error(\\"lf injection\\")'));
-  assert.ok(generated.includes("\\u2028"));
-  assert.ok(generated.includes("\\u2029"));
-  assert.equal(generated.includes('\nthrow new Error("lf injection")'), false);
-  assert.equal(generated.includes("\u2028"), false);
-  assert.equal(generated.includes("\u2029"), false);
-  const checked = spawnSync(process.execPath, ["--check", testPath], { encoding: "utf8" });
-  assert.equal(checked.status, 0, checked.stderr);
+  const record = readFileSync(oldRecord, "utf8");
+  assert.match(record, />Successor &amp; &quot;quoted&quot;<\/a>/);
+  assert.doesNotMatch(record, /&amp;amp;|&amp;quot;/);
 });

@@ -4,15 +4,22 @@
 // every repository. This CLI is the interface; its help text is the manual.
 
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
+  closeSync,
+  constants,
   existsSync,
+  fstatSync,
+  fsyncSync,
+  ftruncateSync,
   lstatSync,
   mkdirSync,
+  openSync,
   readdirSync,
   readFileSync,
   realpathSync,
-  rmSync,
+  renameSync,
+  writeSync,
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
@@ -92,6 +99,37 @@ function git(args, cwd) {
   }
 }
 
+// Decision records need a useful repository locator, never transport
+// credentials. URL userinfo and query/fragment data are unnecessary for
+// identity and are common places for tokens to leak; scp-style SSH remotes
+// lose their user prefix for the same reason.
+export function sanitizeRepositoryIdentity(value) {
+  const repository = String(value).trim();
+  if (!repository || repository.includes("\\") || repository.includes("::")) return "";
+  try {
+    const url = new URL(repository);
+    if (url.protocol !== "file:" && !url.host && repository.includes("@")) {
+      return "";
+    }
+    url.username = "";
+    url.password = "";
+    url.search = "";
+    url.hash = "";
+    return url.toString();
+  } catch {
+    if (repository.includes("://")) return "";
+    // Git's scp-style syntax is not a URL. Retain only its host and path,
+    // dropping userinfo and URL-like query/fragment suffixes. Any malformed
+    // URL-style value fails closed instead of being persisted verbatim.
+    const scp = repository.match(
+      /^(?:[^@\s:/]+@)?([^@:/\s]+):([^?#\s]+?)(?:[?#].*)?$/,
+    );
+    if (scp) return `${scp[1]}:${scp[2]}`;
+    if (/[@?#\r\n\0]/.test(repository)) return "";
+    return repository;
+  }
+}
+
 export function resolveShelf(env = process.env, home = homedir()) {
   if (env.DECISION_SHELF_HOME) return resolve(env.DECISION_SHELF_HOME);
   const dataHome = env.XDG_DATA_HOME || join(home, ".local", "share");
@@ -99,7 +137,9 @@ export function resolveShelf(env = process.env, home = homedir()) {
 }
 
 export function projectFolder(cwd = process.cwd()) {
-  const remote = git(["remote", "get-url", "origin"], cwd);
+  const remote = sanitizeRepositoryIdentity(
+    git(["remote", "get-url", "origin"], cwd),
+  );
   if (remote) {
     const match = remote.match(
       /^(?:[a-z+]+:\/\/)?(?:[^@/]+@)?([^:/]+)[:/](.+?)(?:\.git)?\/?$/,
@@ -117,8 +157,7 @@ export function projectFolder(cwd = process.cwd()) {
   return `local--${basename(root)}--${hash}`;
 }
 
-function recordSummary(path) {
-  const text = readFileSync(path, "utf8");
+function recordSummaryFromText(text, path) {
   const status = text.match(/data-status="([^"]*)"/)?.[1] || "unknown";
   const updated = text.match(/data-updated="([^"]*)"/)?.[1] || "";
   const encodedTitle = text.match(/<h1>([^<]*)<\/h1>/)?.[1];
@@ -131,6 +170,10 @@ function recordSummary(path) {
   const linked = Boolean(successor && SUCCESSOR_ANCHOR.test(successor[1]));
   const lane = laneOwned(lanePath(path), path);
   return { status, updated, title, linked, lane };
+}
+
+function recordSummary(path) {
+  return recordSummaryFromText(readFileSync(path, "utf8"), path);
 }
 
 // The prototype lane lives beside its record, named after it: the record is
@@ -202,9 +245,16 @@ export function staleReason(summary, now = new Date()) {
 }
 
 function listRecords(directory) {
-  if (!existsSync(directory)) return [];
-  return readdirSync(directory)
-    .filter((name) => name.endsWith(".html"))
+  let stat;
+  try {
+    stat = lstatSync(directory);
+  } catch {
+    return [];
+  }
+  if (stat.isSymbolicLink() || !stat.isDirectory()) return [];
+  return readdirSync(directory, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".html"))
+    .map((entry) => entry.name)
     .sort()
     .map((name) => join(directory, name));
 }
@@ -217,6 +267,166 @@ function slugify(text) {
       .replace(/^-+|-+$/g, "")
       .slice(0, 60) || "decision"
   );
+}
+
+function pathInside(root, candidate) {
+  return candidate === root || candidate.startsWith(`${root}${sep}`);
+}
+
+function lstatOrNull(path) {
+  try {
+    return lstatSync(path);
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+// A configured shelf root may itself be a deliberate symlink, but each
+// project folder is package-owned state and must be a real direct child of
+// that shelf. This prevents a pre-planted project symlink from redirecting
+// `new` and every later record operation outside the shelf.
+function projectDirectoryState(shelf, project, { create = false } = {}) {
+  const shelfPath = resolve(shelf);
+  const directory = resolve(shelfPath, project);
+  if (directory === shelfPath || dirname(directory) !== shelfPath) {
+    throw new Error(`invalid project shelf folder — refusing:\n${directory}`);
+  }
+  if (!lstatOrNull(shelfPath) && create) mkdirSync(shelfPath, { recursive: true });
+
+  let realShelf;
+  try {
+    realShelf = realpathSync(shelfPath);
+    if (!lstatSync(realShelf).isDirectory()) throw new Error("not a directory");
+  } catch {
+    throw new Error(`decision shelf must resolve to a directory — refusing:\n${shelfPath}`);
+  }
+
+  let stat = lstatOrNull(directory);
+  if (!stat && create) {
+    try {
+      mkdirSync(directory);
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+    }
+    stat = lstatOrNull(directory);
+  }
+  if (!stat) throw new Error(`project shelf folder not found — refusing:\n${directory}`);
+  if (stat.isSymbolicLink() || !stat.isDirectory()) {
+    throw new Error(
+      `project folder must be a real directory, not a symlink — refusing:\n${directory}`,
+    );
+  }
+
+  let realDirectory;
+  try {
+    realDirectory = realpathSync(directory);
+  } catch {
+    throw new Error(`project shelf folder could not be resolved safely — refusing:\n${directory}`);
+  }
+  if (realDirectory === realShelf || !pathInside(realShelf, realDirectory)) {
+    throw new Error(`project shelf folder escapes the configured shelf — refusing:\n${directory}`);
+  }
+  const identity = lstatSync(directory, { bigint: true });
+  if (identity.isSymbolicLink() || !identity.isDirectory()) {
+    throw new Error(
+      `project folder must be a real directory, not a symlink — refusing:\n${directory}`,
+    );
+  }
+  let finalRealDirectory;
+  try {
+    finalRealDirectory = realpathSync(directory);
+  } catch {
+    throw new Error(`project shelf folder could not be resolved safely — refusing:\n${directory}`);
+  }
+  if (finalRealDirectory !== realDirectory) {
+    throw new Error(`project folder identity changed during validation — refusing:\n${directory}`);
+  }
+  return { directory, identity, realDirectory, realShelf };
+}
+
+function projectDirectory(shelf, project, options) {
+  return projectDirectoryState(shelf, project, options).directory;
+}
+
+// Entering the validated directory binds relative resolution to that directory
+// inode. A replacement before the bind is caught by the identity check; a
+// replacement after it cannot redirect the relative create through a symlink.
+export function writeFileInDirectory(
+  directory,
+  expected,
+  filename,
+  contents,
+  changeDirectory = (path) => process.chdir(path),
+) {
+  if (!filename || basename(filename) !== filename) {
+    throw new Error(`record filename must be a direct child — refusing:\n${filename}`);
+  }
+  if (expected.isSymbolicLink() || !expected.isDirectory()) {
+    throw new Error(
+      `project folder must be a real directory, not a symlink — refusing:\n${directory}`,
+    );
+  }
+  const previousDirectory = process.cwd();
+  try {
+    changeDirectory(directory);
+    const entered = lstatSync(".", { bigint: true });
+    if (entered.dev !== expected.dev || entered.ino !== expected.ino) {
+      throw new Error(`project folder identity changed before record creation — refusing:\n${directory}`);
+    }
+    writeFileSync(filename, contents, { flag: "wx" });
+  } finally {
+    process.chdir(previousDirectory);
+  }
+}
+
+function realDirectoryState(path) {
+  const directory = realpathSync(path);
+  const identity = lstatSync(directory, { bigint: true });
+  if (identity.isSymbolicLink() || !identity.isDirectory()) {
+    throw new Error(`directory must resolve to a real folder — refusing:\n${path}`);
+  }
+  return { directory, identity };
+}
+
+function withBoundChildDirectory(
+  root,
+  expectedRoot,
+  relativeDirectory,
+  { create = false } = {},
+  operation,
+) {
+  const segments = relativeDirectory === "." ? [] : relativeDirectory.split(/[\\/]/);
+  if (segments.some((segment) => !segment || segment === "." || segment === "..")) {
+    throw new Error(`directory must stay below its bound root — refusing:\n${relativeDirectory}`);
+  }
+  const previousDirectory = process.cwd();
+  try {
+    process.chdir(root);
+    if (!sameFileIdentity(expectedRoot, lstatSync(".", { bigint: true }))) {
+      throw new Error(`directory identity changed before access — refusing:\n${root}`);
+    }
+    for (const segment of segments) {
+      let identity;
+      try {
+        identity = lstatSync(segment, { bigint: true });
+      } catch (error) {
+        if (error?.code !== "ENOENT" || !create) throw error;
+        mkdirSync(segment);
+        identity = lstatSync(segment, { bigint: true });
+      }
+      if (identity.isSymbolicLink() || !identity.isDirectory()) {
+        throw new Error(`child directory must be a real folder — refusing:\n${segment}`);
+      }
+      process.chdir(segment);
+      if (!sameFileIdentity(identity, lstatSync(".", { bigint: true }))) {
+        throw new Error(`child directory identity changed before access — refusing:\n${segment}`);
+      }
+    }
+    return operation();
+  } finally {
+    process.chdir(previousDirectory);
+  }
 }
 
 function printRecord(path, summary = recordSummary(path), reason = "") {
@@ -274,7 +484,7 @@ function commandList(shelf, project, { all = false, stale = false } = {}) {
 function commandNew(shelf, project, question, cwd = process.cwd()) {
   if (!question) throw new Error('provide the decision question: new "<question>"');
   const slug = slugify(question);
-  const directory = assertProjectRoot(shelf, project);
+  const { directory } = projectDirectoryState(shelf, project, { create: true });
   const existing = listRecords(directory).filter((path) =>
     basename(path).includes(slug),
   );
@@ -285,10 +495,11 @@ function commandNew(shelf, project, question, cwd = process.cwd()) {
   }
   const today = new Date().toISOString().slice(0, 10);
   const path = join(directory, `${today}-${slug}.html`);
-  const repository =
+  const repository = sanitizeRepositoryIdentity(
     git(["remote", "get-url", "origin"], cwd) ||
-    git(["rev-parse", "--show-toplevel"], cwd) ||
-    resolve(cwd);
+      git(["rev-parse", "--show-toplevel"], cwd) ||
+      resolve(cwd),
+  );
   const head = git(["rev-parse", "HEAD"], cwd) || "UNKNOWN";
   // The template marks CLI-filled slots with delimited {{TOKEN}} placeholders
   // so no replacement can collide with the prose placeholders left for hand
@@ -301,13 +512,16 @@ function commandNew(shelf, project, question, cwd = process.cwd()) {
     .replaceAll("{{REPOSITORY}}", escapeHtml(repository))
     .replaceAll("{{BASE_HEAD}}", escapeHtml(head))
     .replaceAll("{{QUESTION}}", escapeHtml(question));
-  // All failure-prone source reads and record construction happen before the
-  // first mutation. A physical recheck follows creation. On a concurrent path
-  // replacement or write failure, preserve directories conservatively: path
-  // APIs cannot prove atomic mkdir ownership strongly enough for safe cleanup.
-  mkdirSync(directory, { recursive: true });
-  assertProjectRoot(shelf, project);
-  writeFileSync(path, record, { flag: "wx" });
+  // Git metadata collection runs external processes. Revalidate immediately,
+  // then create relative to the bound directory identity so a concurrent
+  // directory-to-symlink swap cannot redirect the write outside the shelf.
+  const validated = projectDirectoryState(shelf, project);
+  writeFileInDirectory(
+    validated.directory,
+    validated.identity,
+    basename(path),
+    record,
+  );
   console.log(path);
 }
 
@@ -525,24 +739,6 @@ export function bridgeTestTarget(cwd = process.cwd(), fileName = "") {
   return pattern.test(fileName) ? directory : null;
 }
 
-// Lexical checks cannot see symlinks: a target directory that physically
-// resolves outside the repository would let the scaffold write escape it.
-// Resolve the deepest existing ancestor and require it to stay under the
-// repository root; the still-missing components below it cannot be links.
-function physicallyInside(base, directory) {
-  let probe = resolve(base, directory);
-  while (!existsSync(probe)) probe = dirname(probe);
-  let real;
-  let realBase;
-  try {
-    real = realpathSync(probe);
-    realBase = realpathSync(base);
-  } catch {
-    return false;
-  }
-  return real === realBase || real.startsWith(`${realBase}${sep}`);
-}
-
 // CLI-filled template slots land in both text nodes and double-quoted
 // attributes. Escape once for both contexts so user/repo text cannot open
 // tags or break out of attribute quotes.
@@ -555,9 +751,9 @@ export function escapeHtml(value) {
     .replaceAll("'", "&#39;");
 }
 
-// Decode exactly the entities emitted by escapeHtml before re-escaping parsed
-// record text into a new HTML context. The single regex pass intentionally
-// avoids recursively decoding hand-written entity text.
+// Decode only the entities emitted by escapeHtml before moving parsed record
+// text into a new HTML context. A single pass avoids recursively decoding
+// hand-written entity text.
 function decodeHtmlText(value) {
   const entities = {
     amp: "&",
@@ -571,58 +767,25 @@ function decodeHtmlText(value) {
   );
 }
 
-// A project folder is package-managed structure, not an arbitrary indirection.
-// Reject a symlinked/non-directory project root and prove its physical path is
-// still under the configured shelf before any record is read or written.
-function assertProjectRoot(shelf, project) {
-  const shelfRoot = resolve(shelf);
-  const projectRoot = resolve(shelfRoot, project);
-  if (projectRoot === shelfRoot || !projectRoot.startsWith(`${shelfRoot}${sep}`)) {
-    throw new Error(`project folder is outside the decision shelf — refusing:\n${projectRoot}`);
-  }
-  let realShelf = null;
-  if (existsSync(shelfRoot)) {
-    try {
-      realShelf = realpathSync(shelfRoot);
-      if (!lstatSync(realShelf).isDirectory()) {
-        throw new Error("not a directory");
-      }
-    } catch {
-      throw new Error(`decision shelf must resolve to a directory — refusing:\n${shelfRoot}`);
-    }
-  }
-  if (!existsSync(projectRoot)) return projectRoot;
-  let stat;
-  let realProject;
-  try {
-    stat = lstatSync(projectRoot);
-    realShelf ||= realpathSync(shelfRoot);
-    realProject = realpathSync(projectRoot);
-  } catch {
-    throw new Error(`project folder must resolve under the decision shelf — refusing:\n${projectRoot}`);
-  }
-  if (stat.isSymbolicLink() || !stat.isDirectory()) {
-    throw new Error(`project folder must be a real directory, not a symlink — refusing:\n${projectRoot}`);
-  }
-  if (realProject === realShelf || !realProject.startsWith(`${realShelf}${sep}`)) {
-    throw new Error(`project folder is outside the decision shelf — refusing:\n${projectRoot}`);
-  }
-  return projectRoot;
+function javascriptString(value) {
+  return JSON.stringify(String(value))
+    .replaceAll("\u2028", "\\u2028")
+    .replaceAll("\u2029", "\\u2029");
 }
 
 // Mutation commands may accept a basename needle or a full path, but every
 // accepted record must be a regular .html file whose physical path stays
-// under this project's shelf folder — absolute paths and symlink escapes
-// are refused before any read or write.
-function assertProjectRecord(shelf, project, recordPath) {
-  const projectRoot = assertProjectRoot(shelf, project);
+// under this project's real shelf folder.
+function validateProjectRecord(shelf, project, recordPath) {
+  const projectState = projectDirectoryState(shelf, project);
+  const projectRoot = projectState.directory;
   let stat;
   try {
     stat = lstatSync(recordPath);
   } catch {
     throw new Error(`record not found — refusing:\n${recordPath}`);
   }
-  if (stat.isSymbolicLink() || !stat.isFile()) {
+  if (stat.isSymbolicLink() || !stat.isFile() || stat.nlink !== 1) {
     throw new Error(
       `record path must be a regular HTML file on the project shelf — refusing:\n${recordPath}`,
     );
@@ -637,7 +800,7 @@ function assertProjectRecord(shelf, project, recordPath) {
       `record path must resolve under this project's shelf — refusing:\n${recordPath}`,
     );
   }
-  if (real !== realProject && !real.startsWith(`${realProject}${sep}`)) {
+  if (dirname(real) !== realProject) {
     throw new Error(
       `record path is outside this project's shelf — refusing:\n${recordPath}`,
     );
@@ -645,22 +808,141 @@ function assertProjectRecord(shelf, project, recordPath) {
   if (!basename(real).endsWith(".html")) {
     throw new Error(`record path must end in .html — refusing:\n${recordPath}`);
   }
-  // Keep the caller's spelling (after lexical resolve). realpath is only for
-  // the containment proof — rewriting /var to /private/var would break path
-  // equality with paths printed by `new`.
-  return resolve(recordPath);
+  const identity = lstatSync(recordPath, { bigint: true });
+  if (
+    identity.isSymbolicLink() ||
+    !identity.isFile() ||
+    identity.nlink !== 1n ||
+    realpathSync(recordPath) !== real
+  ) {
+    throw new Error(`record identity changed during validation — refusing:\n${recordPath}`);
+  }
+  return {
+    path: resolve(recordPath),
+    identity,
+    directory: projectState.directory,
+    directoryIdentity: projectState.identity,
+  };
+}
+
+function assertProjectRecord(shelf, project, recordPath) {
+  return validateProjectRecord(shelf, project, recordPath).path;
+}
+
+function sameFileIdentity(left, right) {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+function withProjectRecordDescriptor(shelf, project, recordPath, flags, operation) {
+  const validated = validateProjectRecord(shelf, project, recordPath);
+  const safePath = validated.path;
+  const directory = validated.directory;
+  const filename = basename(safePath);
+  const expectedDirectory = validated.directoryIdentity;
+  if (expectedDirectory.isSymbolicLink() || !expectedDirectory.isDirectory()) {
+    throw new Error(`record parent must be a real directory — refusing:\n${directory}`);
+  }
+
+  const previousDirectory = process.cwd();
+  let descriptor;
+  try {
+    process.chdir(directory);
+    const enteredDirectory = lstatSync(".", { bigint: true });
+    if (!sameFileIdentity(expectedDirectory, enteredDirectory)) {
+      throw new Error(`record parent identity changed before access — refusing:\n${directory}`);
+    }
+
+    const beforeOpen = lstatSync(filename, { bigint: true });
+    if (beforeOpen.isSymbolicLink() || !beforeOpen.isFile() || beforeOpen.nlink !== 1n) {
+      throw new Error(
+        `record path must be a regular HTML file on the project shelf — refusing:\n${safePath}`,
+      );
+    }
+    try {
+      descriptor = openSync(filename, flags | (constants.O_NOFOLLOW || 0));
+    } catch {
+      throw new Error(
+        `record path changed before it could be opened safely — refusing:\n${safePath}`,
+      );
+    }
+    const opened = fstatSync(descriptor, { bigint: true });
+    let current;
+    try {
+      current = lstatSync(filename, { bigint: true });
+    } catch {
+      throw new Error(`record path changed during safe open — refusing:\n${safePath}`);
+    }
+    if (
+      opened.isSymbolicLink() ||
+      !opened.isFile() ||
+      opened.nlink !== 1n ||
+      current.isSymbolicLink() ||
+      !sameFileIdentity(validated.identity, beforeOpen) ||
+      !sameFileIdentity(beforeOpen, opened) ||
+      !sameFileIdentity(opened, current)
+    ) {
+      throw new Error(`record identity changed during safe open — refusing:\n${safePath}`);
+    }
+    return operation(descriptor, safePath);
+  } finally {
+    try {
+      if (descriptor !== undefined) closeSync(descriptor);
+    } finally {
+      process.chdir(previousDirectory);
+    }
+  }
+}
+
+function readProjectRecord(shelf, project, recordPath) {
+  return withProjectRecordDescriptor(
+    shelf,
+    project,
+    recordPath,
+    constants.O_RDONLY,
+    (descriptor) => readFileSync(descriptor, "utf8"),
+  );
+}
+
+function overwriteDescriptor(descriptor, contents) {
+  const data = Buffer.from(contents);
+  ftruncateSync(descriptor, 0);
+  let offset = 0;
+  while (offset < data.length) {
+    const written = writeSync(descriptor, data, offset, data.length - offset, offset);
+    if (written <= 0) throw new Error("record write made no progress");
+    offset += written;
+  }
+  fsyncSync(descriptor);
+}
+
+export function mutateProjectRecord(shelf, project, recordPath, transform) {
+  return withProjectRecordDescriptor(
+    shelf,
+    project,
+    recordPath,
+    constants.O_RDWR,
+    (descriptor, safePath) => {
+      const replacement = transform(readFileSync(descriptor, "utf8"), safePath);
+      if (typeof replacement !== "string") {
+        throw new Error("record mutation must return complete text");
+      }
+      overwriteDescriptor(descriptor, replacement);
+      return replacement;
+    },
+  );
 }
 
 export function scaffoldBridgeTests(recordPath, criteria, cwd = process.cwd()) {
-  const slug = basename(recordPath, ".html").replace(/^\d{4}-\d{2}-\d{2}-/, "");
+  const slug = slugify(
+    basename(recordPath, ".html").replace(/^\d{4}-\d{2}-\d{2}-/, ""),
+  );
   const fileName = `bridge-${slug}.test.mjs`;
   const directory = bridgeTestTarget(cwd, fileName);
   if (!directory) return null;
-  if (!physicallyInside(cwd, directory)) return null;
   const testPath = join(cwd, directory, fileName);
   const body = [
     `// Executable spec scaffolded from the decision record:`,
-    `//   ${JSON.stringify(recordPath).replaceAll("\u2028", "\\u2028").replaceAll("\u2029", "\\u2029")}`,
+    `//   ${javascriptString(recordPath)}`,
     `// Each test states one acceptance criterion and fails until it is`,
     `// verified with a real assertion. Replace assert.fail, keep the name.`,
     "",
@@ -669,15 +951,27 @@ export function scaffoldBridgeTests(recordPath, criteria, cwd = process.cwd()) {
     "",
     ...criteria.map((criterion) =>
       [
-        `test(${JSON.stringify(criterion)}, () => {`,
-        `  assert.fail(${JSON.stringify(`unverified: ${criterion}`)});`,
+        `test(${javascriptString(criterion)}, () => {`,
+        `  assert.fail(${javascriptString(`unverified: ${criterion}`)});`,
         "});",
         "",
       ].join("\n"),
     ),
   ].join("\n");
-  mkdirSync(join(cwd, directory), { recursive: true });
-  writeFileSync(testPath, body, { flag: "wx" });
+  let root;
+  try {
+    root = realDirectoryState(cwd);
+    withBoundChildDirectory(
+      root.directory,
+      root.identity,
+      directory,
+      { create: true },
+      () => writeFileSync(fileName, body, { flag: "wx" }),
+    );
+  } catch (error) {
+    if (error?.code === "EEXIST") throw error;
+    return null;
+  }
   return testPath;
 }
 
@@ -746,16 +1040,17 @@ function commandStatus(shelf, project, rest) {
     throw new Error("use: decision-shelf supersede <old> <new> — so the successor gets linked");
   }
   const recordPath = resolveRecord(shelf, project, query, "status <record> <status>");
-  const text = readFileSync(recordPath, "utf8");
-  // Leaving superseded would strand the successor link as stale metadata,
-  // and commandSupersede could never repair the lifecycle afterwards — so
-  // the transition is refused rather than partially rewritten.
-  if (/data-status="superseded"/.test(text)) {
-    throw new Error(
-      `record is superseded — create a new record instead, or edit it by hand:\n${recordPath}`,
-    );
-  }
-  writeFileSync(recordPath, statusTransforms(text, status, recordPath));
+  mutateProjectRecord(shelf, project, recordPath, (text, safePath) => {
+    // Leaving superseded would strand the successor link as stale metadata,
+    // and commandSupersede could never repair the lifecycle afterwards — so
+    // the transition is refused rather than partially rewritten.
+    if (/data-status="superseded"/.test(text)) {
+      throw new Error(
+        `record is superseded — create a new record instead, or edit it by hand:\n${safePath}`,
+      );
+    }
+    return statusTransforms(text, status, safePath);
+  });
   console.log(`${status}: ${recordPath}`);
 }
 
@@ -767,42 +1062,54 @@ function commandSupersede(shelf, project, rest) {
   const oldPath = resolveRecord(shelf, project, rest[0], usage);
   const newPath = resolveRecord(shelf, project, rest[1], usage);
   if (oldPath === newPath) throw new Error("a record cannot supersede itself");
-  const text = readFileSync(oldPath, "utf8");
-  // The successor row belongs in the header's list specifically. Detection,
-  // repair, and insertion are all scoped there: a row outside the header —
-  // or a bare "</dl>" that belongs to the Bridge — would leave the header
-  // without its successor while the record still flips to superseded, so
-  // misplaced structure is refused before any mutation.
-  const rowPattern = /<dt>Superseded by<\/dt>\s*<dd>([\s\S]*?)<\/dd>/;
-  const headerText = text.match(/<header>[\s\S]*?<\/header>/)?.[0];
-  const existing = headerText ? headerText.match(rowPattern) : null;
-  if (!existing && rowPattern.test(text)) {
-    throw new Error(
-      `a Superseded by row exists outside the record's header — edit it by hand:\n${oldPath}`,
-    );
-  }
-  // Only a valid successor anchor means "already superseded". A field label
-  // with an empty or plain-text value is exactly the malformed state that
-  // list --stale reports, so supersede repairs that row in place — refusing
-  // it would leave the CLI unable to fix the condition it diagnoses.
-  if (existing && SUCCESSOR_ANCHOR.test(existing[1])) {
-    throw new Error(`already superseded — edit it by hand if the successor changed:\n${oldPath}`);
-  }
-  if (!headerText || (!existing && !headerText.includes("</dl>"))) {
-    throw new Error(`record is missing its header list — edit it by hand:\n${oldPath}`);
-  }
-  const successor = recordSummary(newPath);
-  const href = dirname(oldPath) === dirname(newPath) ? basename(newPath) : newPath;
+  const successor = recordSummaryFromText(
+    readProjectRecord(shelf, project, newPath),
+    newPath,
+  );
+  const href =
+    dirname(oldPath) === dirname(newPath)
+      ? `./${encodeURIComponent(basename(newPath))}`
+      : pathToFileURL(newPath).href;
   const anchor = `<a href="${escapeHtml(href)}">${escapeHtml(successor.title)}</a>`;
-  const transformed = statusTransforms(text, "superseded", oldPath);
-  const transformedHeader = transformed.match(/<header>[\s\S]*?<\/header>/)[0];
-  const patched = existing
-    ? transformedHeader.replace(rowPattern, () => `<dt>Superseded by</dt><dd>${anchor}</dd>`)
-    : transformedHeader.replace(
-        "</dl>",
-        `  <dt>Superseded by</dt><dd>${anchor}</dd>\n      </dl>`,
+  mutateProjectRecord(shelf, project, oldPath, (text, safePath) => {
+    // The successor row belongs in the header's list specifically. Detection,
+    // repair, and insertion are all scoped there: a row outside the header —
+    // or a bare "</dl>" that belongs to the Bridge — would leave the header
+    // without its successor while the record still flips to superseded, so
+    // misplaced structure is refused before any mutation.
+    const rowPattern = /<dt>Superseded by<\/dt>\s*<dd>([\s\S]*?)<\/dd>/;
+    const headerText = text.match(/<header>[\s\S]*?<\/header>/)?.[0];
+    const existing = headerText ? headerText.match(rowPattern) : null;
+    if (!existing && rowPattern.test(text)) {
+      throw new Error(
+        `a Superseded by row exists outside the record's header — edit it by hand:\n${safePath}`,
       );
-  writeFileSync(oldPath, transformed.replace(transformedHeader, () => patched));
+    }
+    // Only a valid successor anchor means "already superseded". A field label
+    // with an empty or plain-text value is exactly the malformed state that
+    // list --stale reports, so supersede repairs that row in place — refusing
+    // it would leave the CLI unable to fix the condition it diagnoses.
+    if (existing && SUCCESSOR_ANCHOR.test(existing[1])) {
+      throw new Error(
+        `already superseded — edit it by hand if the successor changed:\n${safePath}`,
+      );
+    }
+    if (!headerText || (!existing && !headerText.includes("</dl>"))) {
+      throw new Error(`record is missing its header list — edit it by hand:\n${safePath}`);
+    }
+    const transformed = statusTransforms(text, "superseded", safePath);
+    const transformedHeader = transformed.match(/<header>[\s\S]*?<\/header>/)[0];
+    const patched = existing
+      ? transformedHeader.replace(
+          rowPattern,
+          () => `<dt>Superseded by</dt><dd>${anchor}</dd>`,
+        )
+      : transformedHeader.replace(
+          "</dl>",
+          `  <dt>Superseded by</dt><dd>${anchor}</dd>\n      </dl>`,
+        );
+    return transformed.replace(transformedHeader, () => patched);
+  });
   console.log(`superseded: ${oldPath}`);
   console.log(`by:         ${newPath}`);
 }
@@ -816,73 +1123,119 @@ function laneVariants(lane) {
     .sort();
 }
 
+function withOwnedLane(recordState, { create = false, remove = false } = {}, operation) {
+  const lane = lanePath(recordState.path);
+  const laneName = basename(lane);
+  return withBoundChildDirectory(
+    recordState.directory,
+    recordState.directoryIdentity,
+    ".",
+    {},
+    () => {
+      let created = false;
+      let laneIdentity;
+      try {
+        laneIdentity = lstatSync(laneName, { bigint: true });
+      } catch (error) {
+        if (error?.code !== "ENOENT" || !create) {
+          if (error?.code === "ENOENT" && remove) {
+            throw new Error(`no prototype lane to remove for:\n${recordState.path}`);
+          }
+          throw new Error(`no prototype lane for this record — create one: proto <record> new [variant]`);
+        }
+        mkdirSync(laneName);
+        created = true;
+        laneIdentity = lstatSync(laneName, { bigint: true });
+      }
+      if (laneIdentity.isSymbolicLink() || !laneIdentity.isDirectory()) {
+        throw new Error(`lane path is a symlink or non-directory — refusing to touch it:\n${lane}`);
+      }
+
+      const projectIdentity = lstatSync(".", { bigint: true });
+      const result = withBoundChildDirectory(
+        ".",
+        projectIdentity,
+        laneName,
+        {},
+        () => {
+          if (created) {
+            writeFileSync(
+              LANE_MARKER,
+              `${JSON.stringify({ record: laneRecordId(recordState.path), owner: "decision-shelf proto" })}\n`,
+              { flag: "wx" },
+            );
+          } else if (!laneMarkerValid(".", recordState.path)) {
+            throw new Error(
+              `a directory exists at the lane path but was not created by proto for this record — refusing to touch it:\n${lane}`,
+            );
+          }
+          return operation({ lane, created });
+        },
+      );
+
+      if (remove) {
+        const current = lstatSync(laneName, { bigint: true });
+        if (!sameFileIdentity(laneIdentity, current)) {
+          throw new Error(`lane identity changed before cleanup — refusing:\n${lane}`);
+        }
+        const trash = `.decision-shelf-quarantine-${randomUUID()}`;
+        renameSync(laneName, trash);
+        const quarantined = lstatSync(trash, { bigint: true });
+        if (!sameFileIdentity(laneIdentity, quarantined)) {
+          if (!existsSync(laneName)) renameSync(trash, laneName);
+          throw new Error(`lane identity changed during cleanup — refusing:\n${lane}`);
+        }
+        return {
+          result,
+          quarantine: join(recordState.directory, trash),
+        };
+      }
+      return result;
+    },
+  );
+}
+
 function commandProto(shelf, project, rest) {
   const [recordQuery, action, ...args] = rest;
   if (!recordQuery || !action) throw new Error(`usage: ${PROTO_USAGE}`);
-  const recordPath = resolveRecord(shelf, project, recordQuery, PROTO_USAGE);
+  const resolvedRecord = resolveRecord(shelf, project, recordQuery, PROTO_USAGE);
+  const recordState = validateProjectRecord(shelf, project, resolvedRecord);
+  const recordPath = recordState.path;
   const lane = lanePath(recordPath);
   const variantArg = slugify(args.join(" ").trim() || "");
 
-  // Anything on disk at the lane path — including a dangling symlink —
-  // counts as present; whether it is ours is a separate, marker-backed
-  // question. The filename alone never proves ownership.
-  let laneOnDisk = true;
-  try {
-    lstatSync(lane);
-  } catch {
-    laneOnDisk = false;
-  }
-  const requireOwned = () => {
-    if (lstatSync(lane).isSymbolicLink()) {
-      throw new Error(`lane path is a symlink — refusing to touch it:\n${lane}`);
-    }
-    if (!laneMarkerValid(lane, recordPath)) {
-      throw new Error(
-        `a directory exists at the lane path but was not created by proto for this record — refusing to touch it:\n${lane}`,
-      );
-    }
-  };
-
   if (action === "new") {
-    if (laneOnDisk) {
-      requireOwned();
-    } else {
-      mkdirSync(lane, { recursive: true });
-      writeFileSync(
-        join(lane, LANE_MARKER),
-        `${JSON.stringify({ record: laneRecordId(recordPath), owner: "decision-shelf proto" })}\n`,
-        { flag: "wx" },
+    const entry = withOwnedLane(recordState, { create: true }, ({ lane: boundLane }) => {
+      if (!args.length) return boundLane;
+      const directory = join(boundLane, variantArg);
+      if (existsSync(variantArg)) throw new Error(`variant already exists: ${directory}`);
+      const laneIdentity = lstatSync(".", { bigint: true });
+      return withBoundChildDirectory(
+        ".",
+        laneIdentity,
+        variantArg,
+        { create: true },
+        () => {
+          const target = join(directory, "index.html");
+          writeFileSync(
+            "index.html",
+            [
+              "<!doctype html>",
+              '<meta charset="utf-8">',
+              `<title>${variantArg} — disposable prototype</title>`,
+              `<p>Disposable prototype variant "${variantArg}". Replace this stub;`,
+              "the lane is deleted after the decision — durable outcome goes in the record.</p>",
+              "",
+            ].join("\n"),
+            { flag: "wx" },
+          );
+          return target;
+        },
       );
-    }
-    if (!args.length) {
-      console.log(lane);
-      return;
-    }
-    const directory = join(lane, variantArg);
-    if (existsSync(directory)) {
-      throw new Error(`variant already exists: ${directory}`);
-    }
-    mkdirSync(directory);
-    const entry = join(directory, "index.html");
-    writeFileSync(
-      entry,
-      [
-        "<!doctype html>",
-        '<meta charset="utf-8">',
-        `<title>${variantArg} — disposable prototype</title>`,
-        `<p>Disposable prototype variant "${variantArg}". Replace this stub;`,
-        "the lane is deleted after the decision — durable outcome goes in the record.</p>",
-        "",
-      ].join("\n"),
-      { flag: "wx" },
-    );
+    });
     console.log(entry);
   } else if (action === "view") {
-    if (!laneOnDisk) {
-      throw new Error(`no prototype lane for this record — create one: proto <record> new [variant]`);
-    }
-    requireOwned();
-    const variants = laneVariants(lane);
+    const variants = withOwnedLane(recordState, {}, () => laneVariants("."));
     if (variants.length === 0) {
       console.log(`(empty lane) ${lane}`);
       return;
@@ -895,79 +1248,80 @@ function commandProto(shelf, project, rest) {
     }
   } else if (action === "promote") {
     if (!args.length) throw new Error(`provide the surviving variant: ${PROTO_USAGE}`);
-    if (!laneOnDisk) {
-      throw new Error(`no prototype lane for this record — create one: proto <record> new [variant]`);
-    }
-    requireOwned();
     const directory = join(lane, variantArg);
     // Only a real variant directory can be promoted — a plain file or a
     // symlink at that path is not something view would ever list.
-    let variantStat = null;
-    try {
-      variantStat = lstatSync(directory);
-    } catch {
-      variantStat = null;
-    }
-    if (!variantStat || variantStat.isSymbolicLink() || !variantStat.isDirectory()) {
-      throw new Error(
-        `no variant "${variantArg}" in the lane (see: decision-shelf proto <record> view)`,
-      );
-    }
+    withOwnedLane(recordState, {}, () => {
+      let variantStat = null;
+      try {
+        variantStat = lstatSync(variantArg);
+      } catch {
+        variantStat = null;
+      }
+      if (!variantStat || variantStat.isSymbolicLink() || !variantStat.isDirectory()) {
+        throw new Error(
+          `no variant "${variantArg}" in the lane (see: decision-shelf proto <record> view)`,
+        );
+      }
+    });
     // One read, full preflight, one write: a record missing any field the
     // promotion touches is refused, never partially rewritten. Each field
     // is validated and patched inside its owning section — the evidence row
     // in the comparison table, the Prototype field in the Bridge, the
     // visible date in the header — so a duplicate label elsewhere neither
     // satisfies the preflight nor receives the mutation.
-    const text = readFileSync(recordPath, "utf8");
-    const comparison = text.match(
-      /<section aria-labelledby="comparison">[\s\S]*?<\/section>/,
-    );
-    const bridge = text.match(/<section aria-labelledby="bridge">[\s\S]*?<\/section>/);
-    const headerText = text.match(/<header>[\s\S]*?<\/header>/)?.[0];
-    if (
-      !comparison ||
-      !comparison[0].includes("</tbody>") ||
-      !bridge ||
-      !/<dt>Prototype<\/dt><dd>[\s\S]*?<\/dd>/.test(bridge[0]) ||
-      !headerText ||
-      !/<dt>Updated<\/dt><dd>[^<]*<\/dd>/.test(headerText) ||
-      !/data-updated="[^"]*"/.test(text)
-    ) {
-      throw new Error(
-        `record is missing expected structure (Bridge Prototype field, Options and evidence table, data-updated, header Updated row) — edit it by hand:\n${recordPath}`,
+    mutateProjectRecord(shelf, project, recordPath, (text, safePath) => {
+      const comparison = text.match(
+        /<section aria-labelledby="comparison">[\s\S]*?<\/section>/,
       );
-    }
-    const today = new Date().toISOString().slice(0, 10);
-    const relative = `./${basename(lane)}/${variantArg}/`;
-    const row =
-      `          <tr><td>Prototype: ${variantArg}</td><td>${relative}</td>` +
-      `<td>${today}</td><td>Promoted surviving variant from the proto lane</td></tr>\n        </tbody>`;
-    const patchedComparison = comparison[0].replace(/(\s*)<\/tbody>/, `\n${row}`);
-    const patchedBridge = bridge[0].replace(
-      /(<dt>Prototype<\/dt><dd>)[\s\S]*?(<\/dd>)/,
-      `$1${relative}$2`,
-    );
-    const patchedHeader = headerText.replace(
-      /(<dt>Updated<\/dt><dd>)[^<]*(<\/dd>)/,
-      `$1${today}$2`,
-    );
-    writeFileSync(
-      recordPath,
-      text
+      const bridge = text.match(/<section aria-labelledby="bridge">[\s\S]*?<\/section>/);
+      const headerText = text.match(/<header>[\s\S]*?<\/header>/)?.[0];
+      if (
+        !comparison ||
+        !comparison[0].includes("</tbody>") ||
+        !bridge ||
+        !/<dt>Prototype<\/dt><dd>[\s\S]*?<\/dd>/.test(bridge[0]) ||
+        !headerText ||
+        !/<dt>Updated<\/dt><dd>[^<]*<\/dd>/.test(headerText) ||
+        !/data-updated="[^"]*"/.test(text)
+      ) {
+        throw new Error(
+          `record is missing expected structure (Bridge Prototype field, Options and evidence table, data-updated, header Updated row) — edit it by hand:\n${safePath}`,
+        );
+      }
+      const today = new Date().toISOString().slice(0, 10);
+      const relative = `./${basename(lane)}/${variantArg}/`;
+      const relativeHtml = escapeHtml(relative);
+      const row =
+        `          <tr><td>Prototype: ${variantArg}</td><td>${relativeHtml}</td>` +
+        `<td>${today}</td><td>Promoted surviving variant from the proto lane</td></tr>\n        </tbody>`;
+      const patchedComparison = comparison[0].replace(/(\s*)<\/tbody>/, `\n${row}`);
+      const patchedBridge = bridge[0].replace(
+        /(<dt>Prototype<\/dt><dd>)[\s\S]*?(<\/dd>)/,
+        `$1${relativeHtml}$2`,
+      );
+      const patchedHeader = headerText.replace(
+        /(<dt>Updated<\/dt><dd>)[^<]*(<\/dd>)/,
+        `$1${today}$2`,
+      );
+      return text
         .replace(comparison[0], () => patchedComparison)
         .replace(bridge[0], () => patchedBridge)
         .replace(headerText, () => patchedHeader)
-        .replace(/data-updated="[^"]*"/, `data-updated="${today}"`),
-    );
+        .replace(/data-updated="[^"]*"/, `data-updated="${today}"`);
+    });
     console.log(`promoted: ${variantArg}`);
     console.log(`record updated: ${recordPath}`);
   } else if (action === "clean") {
-    if (!laneOnDisk) throw new Error(`no prototype lane to remove for:\n${recordPath}`);
-    requireOwned();
-    const count = laneVariants(lane).length;
-    rmSync(lane, { recursive: true });
-    console.log(`removed ${lane} (${count} variant${count === 1 ? "" : "s"})`);
+    const cleaned = withOwnedLane(
+      recordState,
+      { remove: true },
+      () => laneVariants(".").length,
+    );
+    console.log(
+      `removed ${lane} (${cleaned.result} variant${cleaned.result === 1 ? "" : "s"})`,
+    );
+    console.log(`recoverable quarantine: ${cleaned.quarantine}`);
   } else {
     throw new Error(`unknown proto action: ${action} (usage: ${PROTO_USAGE})`);
   }
@@ -975,7 +1329,7 @@ function commandProto(shelf, project, rest) {
 
 function commandBridge(shelf, project, query, cwd = process.cwd()) {
   const recordPath = resolveRecord(shelf, project, query, "bridge <record>");
-  const criteria = extractBridgeCriteria(readFileSync(recordPath, "utf8"));
+  const criteria = extractBridgeCriteria(readProjectRecord(shelf, project, recordPath));
   if (criteria.length === 0) {
     throw new Error(
       `the record's Bridge has no concrete acceptance criteria yet — edit it first:\n${recordPath}`,

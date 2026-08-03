@@ -157,8 +157,9 @@ function supersedeRecovery(run, oldRecord, newRecord) {
   const header = text.match(/<header>[\s\S]*?<\/header>/)?.[0] || "";
   const successorTitle =
     readFileSync(newRecord, "utf8").match(/<h1>([^<]*)<\/h1>/)?.[1] || "";
+  const successorHref = `./${encodeURIComponent(basename(newRecord))}`;
   const expectedRow =
-    `<dt>Superseded by</dt><dd><a href="${basename(newRecord)}">${successorTitle}</a></dd>`;
+    `<dt>Superseded by</dt><dd><a href="${successorHref}">${successorTitle}</a></dd>`;
   return (
     run.status === 0 &&
     run.stderr === "" &&
@@ -687,10 +688,10 @@ const cases = [
         );
         const attempt = runDecision(ctx, ["supersede", oldRecord, hostileRecord]);
         const text = readFileSync(oldRecord, "utf8");
-        const escapedAnchor =
-          /<a href="successor&quot; onclick=&quot;alert\(1\)\.html">Successor &amp; &quot;quoted&quot;<\/a>/.test(
-            text,
-          );
+        const expectedHref = `./${encodeURIComponent(basename(hostileRecord))}`;
+        const escapedAnchor = text.includes(
+          `<a href="${expectedHref}">Successor &amp; &quot;quoted&quot;</a>`,
+        );
         const attributeBreakout = /href="successor" onclick=/.test(text);
         return result({
           arm: "guarded_cli",

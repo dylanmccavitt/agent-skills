@@ -528,6 +528,33 @@ test("scaffoldBridgeTests declines non-node repositories", () => {
   assert.equal(scaffoldBridgeTests("/tmp/record.html", ["x"], project), null);
 });
 
+test("bridge keeps newline-bearing record paths inside one generated comment", () => {
+  const project = temporaryDir("bridge-comment-path-");
+  writeFileSync(
+    join(project, "package.json"),
+    JSON.stringify({ name: "x", scripts: { test: "node --test test/*.test.mjs" } }),
+  );
+  const recordPath = join(
+    "/tmp",
+    'source\nimport { writeFileSync } from "node:fs";\u2028throw new Error("separator")\u2029',
+    "2026-01-01-safe-record.html",
+  );
+  const criterion = 'safe criterion\u2028throw new Error("criterion separator")\u2029';
+  const testPath = scaffoldBridgeTests(recordPath, [criterion], project);
+  assert.match(testPath, /test\/bridge-safe-record\.test\.mjs$/);
+  const source = readFileSync(testPath, "utf8");
+  assert.match(source, /source\\nimport \{ writeFileSync \}/);
+  assert.ok(source.includes("\\u2028"));
+  assert.ok(source.includes("\\u2029"));
+  assert.doesNotMatch(source, /[\u2028\u2029]/);
+  assert.doesNotMatch(source, /^import \{ writeFileSync \}/m);
+  assert.doesNotMatch(testPath, /[\r\n\u2028\u2029]/);
+  const syntax = spawnSync(process.execPath, ["--check", testPath], {
+    encoding: "utf8",
+  });
+  assert.equal(syntax.status, 0, syntax.stderr);
+});
+
 test("bridge declines foreign runners and honors the configured layout", () => {
   const jestProject = temporaryDir("bridge-jest-");
   writeFileSync(
