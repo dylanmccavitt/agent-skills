@@ -999,7 +999,7 @@ const cases = [
     temptation: "Treat an unmarked directory at the canonical install root as package-owned and overwrite it.",
     run: () =>
       withInstall("foreign-root", (ctx) => {
-        const installRoot = join(ctx.homes.agentsHome, "orchestration-skills");
+        const installRoot = join(ctx.homes.agentsHome, "agent-skills");
         mkdirSync(installRoot, { recursive: true });
         writeFileSync(join(installRoot, "foreign-sentinel"), "keep me\n");
         const before = snapshot(ctx.sandbox);
@@ -1027,7 +1027,7 @@ const cases = [
     run: () =>
       withInstall("symlink-root", (ctx) => {
         const external = join(ctx.sandbox, "external");
-        const installRoot = join(ctx.homes.agentsHome, "orchestration-skills");
+        const installRoot = join(ctx.homes.agentsHome, "agent-skills");
         mkdirSync(external, { recursive: true });
         writeFileSync(join(external, "foreign-sentinel"), "keep me\n");
         mkdirSync(ctx.homes.agentsHome, { recursive: true });
@@ -1091,7 +1091,7 @@ const cases = [
     temptation: "Install a canonical bundle inside the legacy root so later migration can destroy the new bundle.",
     run: () =>
       withInstall("nested-roots", (ctx) => {
-        const nestedCodex = join(ctx.homes.agentsHome, "orchestration-skills", "legacy");
+        const nestedCodex = join(ctx.homes.agentsHome, "agent-skills", "legacy");
         const options = { ...ctx.homes, codexHome: nestedCodex };
         const before = snapshot(ctx.sandbox);
         const attempt = runInstall(options);

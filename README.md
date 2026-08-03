@@ -30,7 +30,7 @@ npx @dylanmccavitt/agent-skills@latest
 ```
 
 The installer is cross-harness: one marker-backed bundle lives under
-`~/.agents/orchestration-skills` (the canonical skills home), and package-managed
+`~/.agents/agent-skills` (the canonical skills home), and package-managed
 skill links are created in `~/.agents/skills`, `$CODEX_HOME/skills`, and
 `~/.claude/skills` (override with `--agents-home`, `--codex-home`,
 `--claude-home`, or the `AGENTS_HOME`, `CODEX_HOME`, `CLAUDE_CONFIG_DIR`
