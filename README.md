@@ -74,6 +74,18 @@ Runs the skill validator (frontmatter, references, agent metadata) and the
 node test suite, which also enforces that skills stay lean guides: under 400
 words and at most three prohibitions per `SKILL.md`.
 
+The repository-only adversarial safety eval is separate from the package test
+gate. It exercises unsafe-action temptations against the decision shelf,
+installer, and bridge compiler:
+
+```sh
+node evaluation/adversarial-v1.mjs
+```
+
+See [`evaluation/README.md`](evaluation/README.md) for its 25-case scope and
+metric limitations. The evaluation directory is development-only and is not
+included in the npm artifact.
+
 ## Lineage
 
 This package continues the retired `@dylanmccavitt/skills` package under a new
