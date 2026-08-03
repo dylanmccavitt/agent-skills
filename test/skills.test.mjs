@@ -14,12 +14,15 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, delimiter, join, resolve } from "node:path";
+import { basename, delimiter, dirname, join, resolve } from "node:path";
 import test from "node:test";
 
 import {
+  checkpointPlan,
   escapeHtml,
   mutateProjectRecord,
+  proposePlan,
+  rejectPlan,
   sanitizeRepositoryIdentity,
   staleReason,
   writeFileInDirectory,
@@ -261,6 +264,11 @@ test("plan proposals stay in one visual record and fold into checkpoint history"
   assert.equal(second.status, 0, second.stderr);
   assert.match(second.stdout, /^P2:/);
 
+  html = readFileSync(record, "utf8");
+  const reformatted = html.replace("</ul>\n        </div>", "</ul>\n          </div>");
+  assert.notEqual(reformatted, html, "the fixture reformats the current-plan container");
+  writeFileSync(record, reformatted);
+
   const accepted = run(["checkpoint", record, "P1"]);
   assert.equal(accepted.status, 0, accepted.stderr);
   html = readFileSync(record, "utf8");
@@ -297,6 +305,75 @@ test("plan tree mutations require selected managed records", () => {
   assert.notEqual(refused.status, 0);
   assert.match(refused.stderr, /require a selected record/);
   assert.equal(readFileSync(record, "utf8"), before);
+});
+
+test("plan mutations stay bound to opened records during path replacement", () => {
+  const cli = resolve(root, "bin", "decision-shelf.mjs");
+  const shelf = mkdtempSync(join(tmpdir(), "decision-shelf-plan-bound-"));
+  const workspace = mkdtempSync(join(tmpdir(), "decision-shelf-plan-bound-repo-"));
+  const outside = mkdtempSync(join(tmpdir(), "decision-shelf-plan-bound-outside-"));
+  const victim = join(outside, "victim.html");
+  const env = { ...process.env, DECISION_SHELF_HOME: shelf };
+  writeFileSync(victim, "outside\n");
+  const run = (args) =>
+    spawnSync(process.execPath, [cli, ...args], {
+      cwd: workspace,
+      env,
+      encoding: "utf8",
+    });
+  const createSelected = (question, proposal = "") => {
+    const created = run(["new", question]);
+    assert.equal(created.status, 0, created.stderr);
+    const record = created.stdout.trim();
+    assert.equal(run(["status", record, "selected"]).status, 0);
+    if (proposal) assert.equal(run(["propose", record, proposal]).status, 0);
+    return record;
+  };
+  const swapAfterTransform = (record, captured) =>
+    (shelfRoot, project, recordPath, transform) =>
+      mutateProjectRecord(shelfRoot, project, recordPath, (text, safePath) => {
+        const replacement = transform(text, safePath);
+        renameSync(record, captured);
+        symlinkSync(victim, record);
+        return replacement;
+      });
+
+  const proposedRecord = createSelected("Bind plan proposal");
+  const proposedCaptured = join(dirname(proposedRecord), "captured-proposal.html");
+  proposePlan(
+    shelf,
+    basename(dirname(proposedRecord)),
+    proposedRecord,
+    "Keep proposal bound",
+    swapAfterTransform(proposedRecord, proposedCaptured),
+  );
+  assert.match(readFileSync(proposedCaptured, "utf8"), /Keep proposal bound/);
+  assert.equal(readFileSync(victim, "utf8"), "outside\n");
+
+  const checkpointRecord = createSelected("Bind plan checkpoint", "Accept safely");
+  const checkpointCaptured = join(dirname(checkpointRecord), "captured-checkpoint.html");
+  checkpointPlan(
+    shelf,
+    basename(dirname(checkpointRecord)),
+    checkpointRecord,
+    "P1",
+    swapAfterTransform(checkpointRecord, checkpointCaptured),
+  );
+  assert.match(readFileSync(checkpointCaptured, "utf8"), /accepted Accept safely/);
+  assert.equal(readFileSync(victim, "utf8"), "outside\n");
+
+  const rejectedRecord = createSelected("Bind plan rejection", "Reject safely");
+  const rejectedCaptured = join(dirname(rejectedRecord), "captured-rejection.html");
+  rejectPlan(
+    shelf,
+    basename(dirname(rejectedRecord)),
+    rejectedRecord,
+    "P1",
+    "Not now",
+    swapAfterTransform(rejectedRecord, rejectedCaptured),
+  );
+  assert.match(readFileSync(rejectedCaptured, "utf8"), /Rejected P1 · Reject safely — Not now/);
+  assert.equal(readFileSync(victim, "utf8"), "outside\n");
 });
 
 test("staleReason marks records stale on exactly day 30", () => {
