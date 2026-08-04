@@ -103,7 +103,7 @@ function git(args, cwd) {
 function hasGitRepository(cwd) {
   if (process.env.GIT_DIR) return true;
 
-  const start = resolve(cwd);
+  const start = cwd;
   let directory = start;
   while (true) {
     if (existsSync(join(directory, ".git"))) return true;
@@ -162,14 +162,17 @@ export function resolveShelf(env = process.env, home) {
 }
 
 export function projectFolder(cwd = process.cwd()) {
-  if (!hasGitRepository(cwd)) {
-    const root = resolve(cwd);
-    const hash = createHash("sha256").update(root).digest("hex").slice(0, 8);
-    return `local--${basename(root)}--${hash}`;
+  const resolvedCwd = resolve(cwd);
+  if (!hasGitRepository(resolvedCwd)) {
+    const hash = createHash("sha256")
+      .update(resolvedCwd)
+      .digest("hex")
+      .slice(0, 8);
+    return `local--${basename(resolvedCwd)}--${hash}`;
   }
 
   const remote = sanitizeRepositoryIdentity(
-    git(["remote", "get-url", "origin"], cwd),
+    git(["remote", "get-url", "origin"], resolvedCwd),
   );
   if (remote) {
     const match = remote.match(
@@ -183,7 +186,7 @@ export function projectFolder(cwd = process.cwd()) {
       }
     }
   }
-  const root = git(["rev-parse", "--show-toplevel"], cwd) || resolve(cwd);
+  const root = git(["rev-parse", "--show-toplevel"], resolvedCwd) || resolvedCwd;
   const hash = createHash("sha256").update(root).digest("hex").slice(0, 8);
   return `local--${basename(root)}--${hash}`;
 }
