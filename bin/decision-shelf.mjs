@@ -22,7 +22,6 @@ import {
   writeSync,
   writeFileSync,
 } from "node:fs";
-import { homedir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -154,9 +153,10 @@ export function sanitizeRepositoryIdentity(value) {
   }
 }
 
-export function resolveShelf(env = process.env, home = homedir()) {
+export function resolveShelf(env = process.env, home) {
   if (env.DECISION_SHELF_HOME) return resolve(env.DECISION_SHELF_HOME);
-  const dataHome = env.XDG_DATA_HOME || join(home, ".local", "share");
+  const resolvedHome = home || require("node:os").homedir();
+  const dataHome = env.XDG_DATA_HOME || join(resolvedHome, ".local", "share");
   return join(dataHome, "decision-shelf");
 }
 
