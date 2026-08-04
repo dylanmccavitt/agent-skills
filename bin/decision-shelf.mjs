@@ -3,7 +3,7 @@
 // The decision shelf: durable, agent-agnostic decision records kept outside
 // every repository. This CLI is the interface; its help text is the manual.
 
-import { execFileSync } from "node:child_process";
+import { createRequire } from "node:module";
 import { createHash, randomUUID } from "node:crypto";
 import {
   closeSync,
@@ -25,6 +25,8 @@ import {
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+
+const require = createRequire(import.meta.url);
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const TEMPLATE = join(packageRoot, "compass", "assets", "decision-record.html");
@@ -88,6 +90,7 @@ Location: $DECISION_SHELF_HOME, else $XDG_DATA_HOME/decision-shelf, else
 `;
 
 function git(args, cwd) {
+  const { execFileSync } = require("node:child_process");
   try {
     return execFileSync("git", args, {
       cwd,
