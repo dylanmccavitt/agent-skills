@@ -98,6 +98,27 @@ function git(args, cwd) {
     return "";
   }
 }
+function hasGitRepository(cwd) {
+  if (process.env.GIT_DIR) return true;
+
+  const start = resolve(cwd);
+  let directory = start;
+  while (true) {
+    if (existsSync(join(directory, ".git"))) return true;
+    if (
+      directory === start &&
+      existsSync(join(directory, "HEAD")) &&
+      existsSync(join(directory, "objects")) &&
+      existsSync(join(directory, "refs"))
+    ) {
+      return true;
+    }
+    const parent = dirname(directory);
+    if (parent === directory) return false;
+    directory = parent;
+  }
+}
+
 
 // Decision records need a useful repository locator, never transport
 // credentials. URL userinfo and query/fragment data are unnecessary for
@@ -137,6 +158,12 @@ export function resolveShelf(env = process.env, home = homedir()) {
 }
 
 export function projectFolder(cwd = process.cwd()) {
+  if (!hasGitRepository(cwd)) {
+    const root = resolve(cwd);
+    const hash = createHash("sha256").update(root).digest("hex").slice(0, 8);
+    return `local--${basename(root)}--${hash}`;
+  }
+
   const remote = sanitizeRepositoryIdentity(
     git(["remote", "get-url", "origin"], cwd),
   );
