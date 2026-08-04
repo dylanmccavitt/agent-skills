@@ -1,0 +1,4 @@
+interface:
+  display_name: "Scout"
+  short_description: "Turn unclear tasks into bounded implementation plans"
+  default_prompt: "Use $scout to grill this task one decision at a time, record the selected brief, and keep later plan changes visible in its plan tree."

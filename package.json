@@ -1,7 +1,7 @@
 {
   "name": "@dylanmccavitt/agent-skills",
   "version": "1.1.0",
-  "description": "Compass, Relay, and Cairn: lean direction, dispatch, and continuity skills for coding-agent harnesses, with an external decision shelf CLI.",
+  "description": "Compass, Scout, Relay, and Cairn: lean direction, planning, dispatch, and continuity skills with an external decision shelf CLI.",
   "license": "MIT",
   "author": "Dylan McCavitt",
   "repository": {
@@ -23,6 +23,7 @@
     "bin/",
     "cairn/",
     "compass/",
+    "scout/",
     "relay/",
     "LICENSE",
     "README.md"
@@ -39,6 +40,7 @@
     "codex",
     "skills",
     "compass",
+    "scout",
     "relay",
     "cairn",
     "decision-making"
