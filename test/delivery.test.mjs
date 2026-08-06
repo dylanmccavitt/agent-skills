@@ -1075,3 +1075,64 @@ test("the stray scan reaches submodules at non-ASCII paths", () => {
 
   assert.deepEqual(strayContextFiles(superRepo.repo), ["café-sm/todo.md"]);
 });
+
+test("project identity is the repository from inside a bare repository", () => {
+  const parent = temporaryDir("shelf-bare-");
+  const shelf = temporaryDir("shelf-bare-home-");
+  const bare = join(parent, "widget.git");
+  execFileSync("git", ["init", "--bare", "--quiet", bare]);
+  execFileSync("git", ["remote", "add", "origin", "https://github.com/acme/widget.git"], {
+    cwd: bare,
+  });
+  const project = (cwd) => {
+    const result = spawnSync(process.execPath, [shelfCli, "path"], {
+      cwd,
+      env: { ...process.env, DECISION_SHELF_HOME: shelf },
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.match(/^Project:\s+(.+)$/m)[1].trim();
+  };
+
+  const fromRoot = project(bare);
+  assert.equal(fromRoot, join(shelf, "github.com--acme--widget"));
+  assert.equal(project(join(bare, "objects")), fromRoot);
+  assert.equal(project(join(bare, "refs", "heads")), fromRoot);
+});
+
+test("a remoteless bare repository keeps one identity from every subdirectory", () => {
+  const parent = temporaryDir("shelf-bare-local-");
+  const shelf = temporaryDir("shelf-bare-local-home-");
+  const bare = join(parent, "plain.git");
+  execFileSync("git", ["init", "--bare", "--quiet", bare]);
+  const project = (cwd) => {
+    const result = spawnSync(process.execPath, [shelfCli, "path"], {
+      cwd,
+      env: { ...process.env, DECISION_SHELF_HOME: shelf },
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.match(/^Project:\s+(.+)$/m)[1].trim();
+  };
+
+  const fromRoot = project(bare);
+  assert.match(fromRoot, /local--plain\.git--[0-9a-f]{8}$/);
+  assert.equal(project(join(bare, "objects")), fromRoot);
+});
+
+test("a plain directory holding a HEAD file is not treated as a repository", () => {
+  const decoy = temporaryDir("shelf-decoy-");
+  const shelf = temporaryDir("shelf-decoy-home-");
+  mkdirSync(join(decoy, "objects"));
+  mkdirSync(join(decoy, "refs"));
+  mkdirSync(join(decoy, "child"));
+  writeFileSync(join(decoy, "HEAD"), "chapter one\n");
+  writeFileSync(join(decoy, "config"), "[ui]\n");
+  const result = spawnSync(process.execPath, [shelfCli, "path"], {
+    cwd: join(decoy, "child"),
+    env: { ...process.env, DECISION_SHELF_HOME: shelf },
+    encoding: "utf8",
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Project:\s+.*local--child--[0-9a-f]{8}$/m);
+});

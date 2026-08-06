@@ -120,23 +120,37 @@ function git(args, cwd) {
     return "";
   }
 }
-function hasGitRepository(cwd) {
-  if (process.env.GIT_DIR) return true;
+function isBareRepositoryRoot(directory) {
+  if (
+    !existsSync(join(directory, "HEAD")) ||
+    !existsSync(join(directory, "objects")) ||
+    !existsSync(join(directory, "refs")) ||
+    !existsSync(join(directory, "config"))
+  ) {
+    return false;
+  }
+  // Git validates HEAD before it accepts a directory as a repository. An
+  // ordinary folder that merely holds a file named HEAD is not a repository.
+  try {
+    const head = readFileSync(join(directory, "HEAD"), "utf8").trim();
+    return /^ref:\s*refs\/\S+$/.test(head) || /^[0-9a-f]{40,64}$/.test(head);
+  } catch {
+    return false;
+  }
+}
 
-  const start = cwd;
-  let directory = start;
+// Git resolves a repository from any directory inside a bare repository, so
+// project identity walks up to the same bare root. The bare root is returned
+// because `rev-parse --show-toplevel` has no work tree to report there.
+function findGitRepository(cwd) {
+  if (process.env.GIT_DIR) return { found: true, bareRoot: "" };
+
+  let directory = cwd;
   while (true) {
-    if (existsSync(join(directory, ".git"))) return true;
-    if (
-      directory === start &&
-      existsSync(join(directory, "HEAD")) &&
-      existsSync(join(directory, "objects")) &&
-      existsSync(join(directory, "refs"))
-    ) {
-      return true;
-    }
+    if (existsSync(join(directory, ".git"))) return { found: true, bareRoot: "" };
+    if (isBareRepositoryRoot(directory)) return { found: true, bareRoot: directory };
     const parent = dirname(directory);
-    if (parent === directory) return false;
+    if (parent === directory) return { found: false, bareRoot: "" };
     directory = parent;
   }
 }
@@ -183,7 +197,8 @@ export function resolveShelf(env = process.env, home) {
 
 export function projectFolder(cwd = process.cwd()) {
   const resolvedCwd = resolve(cwd);
-  if (!hasGitRepository(resolvedCwd)) {
+  const { found, bareRoot } = findGitRepository(resolvedCwd);
+  if (!found) {
     const hash = createHash("sha256")
       .update(resolvedCwd)
       .digest("hex")
@@ -206,7 +221,8 @@ export function projectFolder(cwd = process.cwd()) {
       }
     }
   }
-  const root = git(["rev-parse", "--show-toplevel"], resolvedCwd) || resolvedCwd;
+  const root =
+    git(["rev-parse", "--show-toplevel"], resolvedCwd) || bareRoot || resolvedCwd;
   const hash = createHash("sha256").update(root).digest("hex").slice(0, 8);
   return `local--${basename(root)}--${hash}`;
 }
