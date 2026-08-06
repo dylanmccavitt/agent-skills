@@ -1,6 +1,6 @@
 ---
 name: compass
-description: Explore and settle a product, project, or architecture direction interactively before implementation. Use when the user is unsure where to go next, wants alternatives made concrete and compared, or needs a decision recorded or resumed. Not for decisions already settled by requirements.
+description: Explore and settle a product, project, or architecture direction interactively before implementation. Use when the user is unsure where to go next or wants alternatives made concrete and compared. When direction is known but implementation decisions remain, use scout.
 ---
 
 # Compass
