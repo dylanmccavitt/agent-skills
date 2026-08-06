@@ -99,3 +99,86 @@ test("the blocked accept is reported in --json output", () => {
   assert.equal(report.accept_blocked_reason, "the gate failed");
   rmSync(dir, { recursive: true, force: true });
 });
+
+// ---------------------------------------------------------------- stale baselines
+
+// A stale baseline must not be guarded. Guarding it would deadlock the loop the
+// stale marker exists to unblock: the truthful lower run counts as a regression,
+// and a regression refuses --accept, so the bad numbers can never be replaced.
+function behaviorSandbox(metrics, { full = false } = {}) {
+  const dir = sandbox(0);
+  mkdirSync(join(dir, "evaluation"), { recursive: true });
+  if (full) {
+    // A full run also shells out to the unit tests and the adversarial suite,
+    // so both are stubbed to pass with the metrics the gate parses.
+    const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
+    pkg.scripts.test = 'node -e ""';
+    writeFileSync(join(dir, "package.json"), `${JSON.stringify(pkg, null, 2)}\n`);
+    writeFileSync(
+      join(dir, "autoresearch.sh"),
+      `#!/bin/sh\necho "Cases: 25 | pass: ${metrics.adversarial_cases_passed} | fail: 0"\n`,
+      { mode: 0o755 },
+    );
+  }
+  const lines = Object.entries(metrics).map(([k, v]) => `METRIC ${k}=${v}`);
+  lines.push("Scenarios: 24 | pass: 1 | fail: 23");
+  writeFileSync(
+    join(dir, "evaluation", "skill-behavior-v1.mjs"),
+    `${lines.map((l) => `console.log(${JSON.stringify(l)});`).join("\n")}\n`,
+  );
+  return dir;
+}
+
+const WORSE = {
+  scenarios_passed: 1,
+  scenario_pass_rate: 0.04,
+  activation_accuracy: 0.1,
+  contract_pass_rate: 0.1,
+  false_activation_rate: 0.9,
+};
+
+test("a stale baseline is reported but never guarded", () => {
+  const dir = behaviorSandbox(WORSE);
+  const baselinePath = join(dir, "evaluation", "reports", "baseline.json");
+  writeFileSync(
+    baselinePath,
+    `${JSON.stringify({ plumbing: { ...BASELINE.plumbing, stale: true } }, null, 2)}\n`,
+  );
+
+  const proc = runGate(dir, ["--only", "behavior"]);
+
+  assert.equal(proc.status, 0, "a stale baseline must not fail the run it exists to replace");
+  assert.doesNotMatch(proc.stdout, /REGRESSION/);
+  assert.match(proc.stdout, /marked stale and is NOT guarded/);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("a live baseline that is not stale still guards against regressions", () => {
+  const dir = behaviorSandbox(WORSE);
+  writeFileSync(
+    join(dir, "evaluation", "reports", "baseline.json"),
+    `${JSON.stringify(BASELINE, null, 2)}\n`,
+  );
+
+  const proc = runGate(dir, ["--only", "behavior"]);
+
+  assert.equal(proc.status, 1, "a real regression must still fail the gate");
+  assert.match(proc.stdout, /REGRESSION scenarios_passed: 12 -> 1/);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("re-recording a stale baseline clears the stale marker", () => {
+  const dir = behaviorSandbox(BASELINE.plumbing, { full: true });
+  const baselinePath = join(dir, "evaluation", "reports", "baseline.json");
+  writeFileSync(
+    baselinePath,
+    `${JSON.stringify({ plumbing: { ...BASELINE.plumbing, stale: true } }, null, 2)}\n`,
+  );
+
+  const proc = runGate(dir, ["--accept"]);
+  const after = JSON.parse(readFileSync(baselinePath, "utf8"));
+
+  assert.equal(proc.status, 0);
+  assert.equal(after.plumbing.stale, undefined, "an accepted baseline is proven, so it is not stale");
+  rmSync(dir, { recursive: true, force: true });
+});

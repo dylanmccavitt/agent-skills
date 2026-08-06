@@ -201,7 +201,12 @@ writeFileSync(join(reportsDir, `latest-${mode}.json`), `${JSON.stringify(report,
 const baseline = existsSync(baselinePath) ? JSON.parse(readFileSync(baselinePath, "utf8")) : null;
 const regressions = [];
 const gains = [];
-if (baseline?.[mode]) {
+// A baseline marked stale describes behavior that a later change invalidated, so
+// guarding against it would block the very run meant to replace it: truthful
+// lower scores would count as regressions, and a regression refuses --accept.
+// A stale entry is therefore reported but never guarded.
+const baselineStale = Boolean(baseline?.[mode]?.stale);
+if (baseline?.[mode] && !baselineStale) {
   for (const [key, direction] of Object.entries(GUARDED)) {
     const was = baseline[mode][key];
     const now = metrics[key];
@@ -214,6 +219,7 @@ if (baseline?.[mode]) {
 }
 report.regressions = regressions;
 report.gains = gains;
+report.baseline_stale = baselineStale;
 
 const stageFailed = stages.filter((s) => !s.ok);
 const failed = stageFailed.length > 0 || regressions.length > 0;
@@ -266,6 +272,9 @@ if (asJson) {
   gains.forEach((g) => console.log(`  gain  ${g.metric}: ${g.was} -> ${g.now}`));
   regressions.forEach((r) => console.log(`  REGRESSION ${r.metric}: ${r.was} -> ${r.now}`));
   if (!baseline) console.log("\n  no baseline recorded yet; run with --accept to set one");
+  if (baselineStale) {
+    console.log(`\n  baseline for ${mode} is marked stale and is NOT guarded; re-record it with --accept`);
+  }
   if (acceptBlocked) {
     console.log(`\n  baseline NOT updated: ${acceptBlockedReason}, so --accept was refused`);
   }
