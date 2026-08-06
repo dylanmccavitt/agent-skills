@@ -17,6 +17,7 @@
     "false_activation_rate": 0,
     "recorded_at": "2026-08-06T17:34:14.529915Z",
     "head": "e59d152",
-    "note": "Recorded from the lower of two consecutive live runs (contract 0.9574 and 0.9362). Live scoring is nondeterministic; 1-2 residual per-run contract flakes are expected."
+    "stale": true,
+    "note": "STALE — do not treat as proven. Recorded from the lower of two consecutive live runs (contract 0.9574 and 0.9362) while the audit event mapper still fabricated contract fields: it hard-coded record status \"selected\", scored status writes as resume, and asserted structurally different prototype variants without reading the proto lane. These numbers are therefore inflated. Re-record with two consecutive `npm run gate:live` runs against the tightened mapper before trusting or guarding them."
   }
 }

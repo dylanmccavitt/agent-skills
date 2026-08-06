@@ -215,7 +215,25 @@ if (baseline?.[mode]) {
 report.regressions = regressions;
 report.gains = gains;
 
-if (accept) {
+const stageFailed = stages.filter((s) => !s.ok);
+const failed = stageFailed.length > 0 || regressions.length > 0;
+
+// A baseline is the record of proven behavior, so it is only rewritten when the
+// run actually proved something: every stage passed and no guarded metric
+// regressed. Writing first and failing afterwards would leave a worse baseline
+// on disk even though the gate reported failure.
+// A partial run cannot prove a baseline either: the skipped stages contribute no
+// metrics, so accepting one would drop the guarded keys it never measured.
+const partialRun = Boolean(only);
+const acceptBlockedReason = failed
+  ? "the gate failed"
+  : partialRun
+    ? "the run was partial (--only)"
+    : null;
+const acceptBlocked = accept && acceptBlockedReason !== null;
+report.accept_blocked = acceptBlocked;
+report.accept_blocked_reason = acceptBlocked ? acceptBlockedReason : null;
+if (accept && !acceptBlocked) {
   const next = baseline || {};
   next[mode] = Object.fromEntries(
     Object.keys(GUARDED).filter((k) => typeof metrics[k] === "number").map((k) => [k, metrics[k]]));
@@ -223,9 +241,6 @@ if (accept) {
   next[mode].head = head;
   writeFileSync(baselinePath, `${JSON.stringify(next, null, 2)}\n`);
 }
-
-const stageFailed = stages.filter((s) => !s.ok);
-const failed = stageFailed.length > 0 || regressions.length > 0;
 
 if (asJson) {
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
@@ -251,6 +266,9 @@ if (asJson) {
   gains.forEach((g) => console.log(`  gain  ${g.metric}: ${g.was} -> ${g.now}`));
   regressions.forEach((r) => console.log(`  REGRESSION ${r.metric}: ${r.was} -> ${r.now}`));
   if (!baseline) console.log("\n  no baseline recorded yet; run with --accept to set one");
+  if (acceptBlocked) {
+    console.log(`\n  baseline NOT updated: ${acceptBlockedReason}, so --accept was refused`);
+  }
   console.log(`\n  report: evaluation/reports/latest-${mode}.json`);
   stageFailed.forEach((s) => console.log(`\n--- ${s.name} output ---\n${s.out.trim().slice(-2000)}`));
 }
