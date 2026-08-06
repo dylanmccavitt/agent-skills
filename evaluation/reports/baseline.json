@@ -1,0 +1,22 @@
+{
+  "plumbing": {
+    "scenarios_passed": 12,
+    "scenario_pass_rate": 0.5,
+    "activation_accuracy": 0.5,
+    "contract_pass_rate": 0.3617,
+    "false_activation_rate": 0,
+    "adversarial_cases_passed": 25,
+    "recorded_at": "2026-08-06T14:05:03.289Z",
+    "head": "e59d152"
+  },
+  "live": {
+    "scenarios_passed": 22,
+    "scenario_pass_rate": 0.9167,
+    "activation_accuracy": 1,
+    "contract_pass_rate": 0.9362,
+    "false_activation_rate": 0,
+    "recorded_at": "2026-08-06T17:34:14.529915Z",
+    "head": "e59d152",
+    "note": "Recorded from the lower of two consecutive live runs (contract 0.9574 and 0.9362). Live scoring is nondeterministic; 1-2 residual per-run contract flakes are expected."
+  }
+}
