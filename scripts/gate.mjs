@@ -29,11 +29,25 @@ const has = (flag) => argv.includes(flag);
 const live = has("--live");
 const asJson = has("--json");
 const accept = has("--accept");
+const STAGE_NAMES = ["validate", "tests", "adversarial", "behavior"];
 const onlyArg = argv.find((a) => a.startsWith("--only"));
 const only = onlyArg
   ? (onlyArg.includes("=") ? onlyArg.split("=")[1] : argv[argv.indexOf(onlyArg) + 1] || "")
       .split(",").map((s) => s.trim()).filter(Boolean)
   : null;
+// An empty array is truthy, so an empty or misspelled --only would silently select no stage
+// and the gate would report success having checked nothing. A selection that names no real
+// stage is a misconfiguration, not a pass.
+if (only) {
+  const unknown = only.filter((s) => !STAGE_NAMES.includes(s));
+  if (only.length === 0 || unknown.length > 0) {
+    const detail = only.length === 0
+      ? "--only needs at least one stage"
+      : `unknown stage(s): ${unknown.join(", ")}`;
+    console.error(`gate: ${detail}\ngate: valid stages are ${STAGE_NAMES.join(", ")}`);
+    process.exit(2);
+  }
+}
 const wants = (stage) => !only || only.includes(stage);
 
 const EXPECTED_SCENARIOS = 24;
@@ -222,7 +236,9 @@ report.gains = gains;
 report.baseline_stale = baselineStale;
 
 const stageFailed = stages.filter((s) => !s.ok);
-const failed = stageFailed.length > 0 || regressions.length > 0;
+// Defence in depth: whatever the selection, a run that executed no stage proved nothing.
+const ranNothing = stages.length === 0;
+const failed = stageFailed.length > 0 || regressions.length > 0 || ranNothing;
 
 // A baseline is the record of proven behavior, so it is only rewritten when the
 // run actually proved something: every stage passed and no guarded metric
@@ -272,6 +288,7 @@ if (asJson) {
   gains.forEach((g) => console.log(`  gain  ${g.metric}: ${g.was} -> ${g.now}`));
   regressions.forEach((r) => console.log(`  REGRESSION ${r.metric}: ${r.was} -> ${r.now}`));
   if (!baseline) console.log("\n  no baseline recorded yet; run with --accept to set one");
+  if (ranNothing) console.log("\n  FAIL: no stage ran, so nothing was proven");
   if (baselineStale) {
     console.log(`\n  baseline for ${mode} is marked stale and is NOT guarded; re-record it with --accept`);
   }

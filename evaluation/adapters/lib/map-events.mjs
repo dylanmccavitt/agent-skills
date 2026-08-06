@@ -67,8 +67,11 @@ function listHtmlRecords(shelfDir) {
     for (const entry of readdirSync(directory)) {
       const path = join(directory, entry);
       const info = statSync(path);
-      if (info.isDirectory()) walk(path);
-      else if (entry.endsWith(".html")) records.push(path);
+      // `<record>.proto/<variant>/index.html` is disposable prototype
+      // material, never a durable record.
+      if (info.isDirectory()) {
+        if (!entry.endsWith(".proto")) walk(path);
+      } else if (entry.endsWith(".html")) records.push(path);
     }
   };
   walk(shelfDir);
@@ -84,10 +87,15 @@ function readRecordStatus(location) {
   }
 }
 
+// The audited record path is authoritative. Without it, only a shelf holding
+// exactly one record is unambiguous; any other shelf drops the event instead
+// of attaching the audit to a guessed record.
 function resolveShelfRecord(record, shelfDir) {
+  if (record.recordPath) {
+    return existsSync(record.recordPath) ? record.recordPath : null;
+  }
   const records = listHtmlRecords(shelfDir);
-  const location = record.recordPath || records.at(-1);
-  return location && existsSync(location) ? location : null;
+  return records.length === 1 && existsSync(records[0]) ? records[0] : null;
 }
 
 // Resume is the read-only form: `status <record>`. A trailing status token is
@@ -177,20 +185,28 @@ export function mapEvents({
 }) {
   const blob = `${agentStdout}\n${agentStderr}`;
   const selected_skills = parseSelectedSkills(blob);
-  const declaredEvents = parseJsonEvents(blob);
-  const observedEvents = eventsFromAudits(auditRecords, shelfDir);
+  // Fail closed: a model may not declare a durable shelf effect. `record` and
+  // `prototype` events are read only from decision-shelf audit records, so a
+  // declared location cannot stand in for a record that was never created.
+  const declaredEvents = parseJsonEvents(blob).filter(
+    (event) => event.type !== "record" && event.type !== "prototype",
+  );
+  // One durable fact observed twice (`proto new` then `proto view`) is one
+  // event, not two.
+  const observedEvents = [];
+  const seenObserved = new Set();
+  for (const event of eventsFromAudits(auditRecords, shelfDir)) {
+    const key = JSON.stringify(event);
+    if (seenObserved.has(key)) continue;
+    seenObserved.add(key);
+    observedEvents.push(event);
+  }
 
-  // Fail closed: only keep declared events that are backed by audits when they
-  // claim durable CLI effects.
   const events = [];
   for (const event of [...declaredEvents, ...observedEvents]) {
     if (event.type === "receipt") {
       const hasDelivery = (auditRecords || []).some((entry) => entry.tool === "delivery");
       if (!hasDelivery) continue;
-    }
-    if (event.type === "record" || event.type === "prototype") {
-      const hasShelf = (auditRecords || []).some((entry) => entry.tool === "decision-shelf");
-      if (!hasShelf && !event.location) continue;
     }
     events.push(event);
   }

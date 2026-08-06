@@ -19,6 +19,16 @@ function modeFromEnv(env = process.env) {
   return "live";
 }
 
+// The fixture tree is the only reconstruction of what the agent saw, so it is
+// retained whenever the agent run failed and removed otherwise.
+// SKILL_BEHAVIOR_KEEP_FIXTURE=1 forces retention, =0 forces removal.
+function retainFixture(env, agent) {
+  if (env.SKILL_BEHAVIOR_KEEP_FIXTURE === "1") return true;
+  if (env.SKILL_BEHAVIOR_KEEP_FIXTURE === "0") return false;
+  if (agent.skipped) return false;
+  return Boolean(agent.error) || agent.status !== 0;
+}
+
 export async function runAdapter({
   request = assertRunnerRequest(readStdinJson(), process.env.SKILL_BEHAVIOR_SCENARIO_ID),
   env = process.env,
@@ -29,42 +39,53 @@ export async function runAdapter({
     skills: request.skills,
   });
 
-  const agentArgv = mode === "live" ? resolveAgentCommand(env) : null;
-  const agent = invokeAgentCli({
-    argv: agentArgv,
-    cwd: fixture.projectDir,
-    env: {
-      ...env,
-      PATH: `${wrappersDir}:${env.PATH || ""}`,
-      DECISION_SHELF_HOME: fixture.shelfDir,
-      SKILL_BEHAVIOR_AUDIT_LOG: fixture.auditLog,
-      SKILL_BEHAVIOR_RUN_ROOT: fixture.root,
-    },
-    prompt: request.scenario.prompt,
-    skillsDir: fixture.skillsDir,
-    contextPath: fixture.contextPath,
-    answersPath: fixture.answersPath,
-  });
+  try {
+    const agentArgv = mode === "live" ? resolveAgentCommand(env) : null;
+    const agent = invokeAgentCli({
+      argv: agentArgv,
+      cwd: fixture.projectDir,
+      env: {
+        ...env,
+        PATH: `${wrappersDir}:${env.PATH || ""}`,
+        DECISION_SHELF_HOME: fixture.shelfDir,
+        SKILL_BEHAVIOR_AUDIT_LOG: fixture.auditLog,
+        SKILL_BEHAVIOR_RUN_ROOT: fixture.root,
+      },
+      prompt: request.scenario.prompt,
+      skillsDir: fixture.skillsDir,
+      contextPath: fixture.contextPath,
+      answersPath: fixture.answersPath,
+    });
 
-  const transcript = mapEvents({
-    scenario: request.scenario,
-    agentStdout: agent.stdout,
-    agentStderr: agent.stderr,
-    auditRecords: readAuditRecords(fixture.auditLog),
-    shelfDir: fixture.shelfDir,
-    mode: agent.skipped ? "plumbing" : mode,
-  });
+    const transcript = mapEvents({
+      scenario: request.scenario,
+      agentStdout: agent.stdout,
+      agentStderr: agent.stderr,
+      auditRecords: readAuditRecords(fixture.auditLog),
+      shelfDir: fixture.shelfDir,
+      mode: agent.skipped ? "plumbing" : mode,
+    });
 
-  if (!agent.skipped && agent.error) {
-    transcript.final = `${transcript.final}\nAgent invoke error: ${agent.error}`;
+    if (!agent.skipped && agent.error) {
+      transcript.final = `${transcript.final}\nAgent invoke error: ${agent.error}`;
+    }
+
+    const persisted = persistTranscript(env.SKILL_BEHAVIOR_TRANSCRIPT_DIR, transcript);
+    if (persisted) {
+      transcript.metrics = transcript.metrics || {};
+    }
+
+    // Every event location and exists flag is already resolved above, and the
+    // grader reads transcript fields only, so removal here cannot change a score.
+    const retained = retainFixture(env, agent);
+    if (retained) console.error(`skill-behavior: retained fixture ${fixture.root}`);
+    else fixture.cleanup();
+
+    return { transcript, fixture, agent, retained, mode: agent.skipped ? "plumbing" : mode };
+  } catch (error) {
+    console.error(`skill-behavior: retained fixture ${fixture.root}`);
+    throw error;
   }
-
-  const persisted = persistTranscript(env.SKILL_BEHAVIOR_TRANSCRIPT_DIR, transcript);
-  if (persisted) {
-    transcript.metrics = transcript.metrics || {};
-  }
-
-  return { transcript, fixture, agent, mode: agent.skipped ? "plumbing" : mode };
 }
 
 async function main() {

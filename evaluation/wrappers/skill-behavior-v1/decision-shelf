@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { appendAudit } from "../../adapters/lib/audit-log.mjs";
@@ -29,13 +28,29 @@ const run = spawnSync(process.execPath, [target, ...argv], {
   maxBuffer: 8 * 1024 * 1024,
 });
 
-let recordPath = null;
-const combined = `${run.stdout || ""}\n${run.stderr || ""}`;
-const match = combined.match(/Record:\s+(\/[^\r\n]+)/);
-if (match) recordPath = match[1];
-else if (existsSync(shelfHome)) {
-  // leave null; mapper can discover later
+// `status <record>` and `proto view` print a `Record:` locator, but `new`
+// prints the record path alone. Read both forms, and ignore prototype lane
+// files, so every audit names the exact record it touched.
+const shelfRoot = resolve(shelfHome);
+
+function inShelf(path) {
+  return path === shelfRoot || path.startsWith(`${shelfRoot}${sep}`);
 }
+
+function findRecordPath(stdout, stderr) {
+  const locator = `${stdout}\n${stderr}`.match(/Record:\s+(\/[^\r\n]+)/);
+  if (locator && inShelf(locator[1])) return locator[1];
+  const printed = stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(
+      (line) => line.endsWith(".html") && !line.includes(`.proto${sep}`) && inShelf(line),
+    );
+  return printed.at(-1) || null;
+}
+
+const recordPath =
+  run.status === 0 ? findRecordPath(run.stdout || "", run.stderr || "") : null;
 
 appendAudit(auditLog, {
   tool: "decision-shelf",

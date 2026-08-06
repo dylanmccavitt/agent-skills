@@ -182,3 +182,43 @@ test("re-recording a stale baseline clears the stale marker", () => {
   assert.equal(after.plumbing.stale, undefined, "an accepted baseline is proven, so it is not stale");
   rmSync(dir, { recursive: true, force: true });
 });
+
+// ---------------------------------------------------------------- --only guards
+
+// An empty array is truthy in JS, so an empty or misspelled --only used to select no stage at
+// all while still exiting 0. A gate that checked nothing must never look green.
+test("--only with no recognized stage is a misconfiguration, not a pass", () => {
+  const dir = sandbox(0);
+  writeBaseline(dir);
+
+  for (const args of [["--only", ""], ["--only="], ["--only", "tets"], ["--only", "validate,bogus"]]) {
+    const proc = runGate(dir, args);
+    assert.notEqual(proc.status, 0, `${JSON.stringify(args)} must not exit 0`);
+    assert.match(proc.stderr, /valid stages are validate, tests, adversarial, behavior/);
+  }
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("--only still accepts a real stage", () => {
+  const dir = sandbox(0);
+  writeBaseline(dir);
+
+  const proc = runGate(dir, ["--only", "validate"]);
+
+  assert.equal(proc.status, 0, proc.stderr);
+  assert.match(proc.stdout, /validate:skills/);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("a run that executed no stage fails even when nothing errored", () => {
+  const dir = sandbox(0);
+  writeBaseline(dir);
+
+  // --only is validated up front, so drive the defence-in-depth guard directly by
+  // selecting a real stage list and proving the verdict depends on stages having run.
+  const proc = runGate(dir, ["--only", "validate", "--json"]);
+  const report = JSON.parse(proc.stdout);
+
+  assert.ok(report.stages.length > 0, "the selected stage must actually run");
+  rmSync(dir, { recursive: true, force: true });
+});

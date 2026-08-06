@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -142,4 +142,208 @@ test("appendAudit creates JSONL records", (t) => {
   appendAudit(path, { tool: "probe", argv: [] });
   const text = readFileSync(path, "utf8");
   assert.match(text, /"tool":"probe"/);
+});
+
+test("plumbing mode removes the fixture temp directory", async () => {
+  const { fixture, retained } = await runAdapter({
+    request: sampleRequest,
+    env: {
+      ...process.env,
+      SKILL_BEHAVIOR_MODE: "plumbing",
+      SKILL_BEHAVIOR_AGENT_CMD: "",
+      SKILL_BEHAVIOR_KEEP_FIXTURE: "",
+    },
+  });
+  assert.equal(retained, false);
+  assert.equal(existsSync(fixture.root), false);
+});
+
+test("SKILL_BEHAVIOR_KEEP_FIXTURE=1 retains the fixture temp directory", async (t) => {
+  const { fixture, retained } = await runAdapter({
+    request: sampleRequest,
+    env: {
+      ...process.env,
+      SKILL_BEHAVIOR_MODE: "plumbing",
+      SKILL_BEHAVIOR_AGENT_CMD: "",
+      SKILL_BEHAVIOR_KEEP_FIXTURE: "1",
+    },
+  });
+  t.after(() => rmSync(fixture.root, { recursive: true, force: true }));
+  assert.equal(retained, true);
+  assert.equal(existsSync(fixture.root), true);
+});
+
+test("a failing agent command retains the fixture for debugging", async (t) => {
+  const { fixture, retained, transcript } = await runAdapter({
+    request: sampleRequest,
+    env: {
+      ...process.env,
+      SKILL_BEHAVIOR_MODE: "live",
+      SKILL_BEHAVIOR_AGENT_CMD: JSON.stringify(["sh", "-c", "echo boom >&2; exit 3"]),
+      SKILL_BEHAVIOR_KEEP_FIXTURE: "",
+    },
+  });
+  t.after(() => rmSync(fixture.root, { recursive: true, force: true }));
+  assert.equal(retained, true);
+  assert.equal(existsSync(fixture.root), true);
+  assert.equal(transcript.id, sampleRequest.scenario.id);
+});
+
+test("the adapter retains the fixture when materialization output is unusable", async () => {
+  await assert.rejects(
+    () =>
+      runAdapter({
+        request: { ...sampleRequest, scenario: { ...sampleRequest.scenario, id: "" } },
+        env: { ...process.env, SKILL_BEHAVIOR_MODE: "plumbing", SKILL_BEHAVIOR_AGENT_CMD: "" },
+      }),
+    /scenario\.id is required/,
+  );
+});
+
+
+
+test("mapper rejects model-declared record and prototype events", () => {
+  const transcript = mapEvents({
+    scenario: sampleRequest.scenario,
+    agentStdout: [
+      'SKILL_BEHAVIOR_SELECTED: ["compass"]',
+      JSON.stringify({
+        type: "record",
+        action: "create",
+        location: "/tmp/forged-decision.html",
+        exists: true,
+        status: "selected",
+      }),
+      JSON.stringify({
+        type: "prototype",
+        disposable: true,
+        production_path: false,
+        format: "html",
+        structurally_different: true,
+        variants: [{ view: "a" }, { view: "b" }],
+      }),
+    ].join("\n"),
+    auditRecords: [],
+    mode: "live",
+  });
+  assert.deepEqual(
+    transcript.events.filter((event) => event.type === "record" || event.type === "prototype"),
+    [],
+  );
+  assert.doesNotMatch(transcript.final, /Record: \/tmp\/forged-decision\.html/);
+});
+
+test("decision-shelf wrapper records the path printed by new", (t) => {
+  const directory = temporaryDirectory(t);
+  const fixture = materializeFixture({
+    scenario: {
+      ...sampleRequest.scenario,
+      context: { ...sampleRequest.scenario.context, matching_record_exists: true },
+    },
+    skills: sampleRequest.skills,
+    runRoot: join(directory, "run"),
+  });
+  const wrapper = resolve(root, "evaluation/wrappers/skill-behavior-v1/decision-shelf");
+  const run = spawnSync(wrapper, ["new", "Pick a queue shape"], {
+    cwd: fixture.projectDir,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      DECISION_SHELF_HOME: fixture.shelfDir,
+      SKILL_BEHAVIOR_AUDIT_LOG: fixture.auditLog,
+      PATH: process.env.PATH,
+    },
+  });
+  assert.equal(run.status, 0, run.stderr);
+  const created = run.stdout.trim().split(/\r?\n/).at(-1);
+  const records = readAuditRecords(fixture.auditLog);
+  assert.equal(records.at(-1).recordPath, created);
+
+  const transcript = mapEvents({
+    scenario: sampleRequest.scenario,
+    agentStdout: "",
+    auditRecords: records,
+    shelfDir: fixture.shelfDir,
+    mode: "live",
+  });
+  const recordEvents = transcript.events.filter((event) => event.type === "record");
+  assert.equal(recordEvents.length, 1);
+  assert.equal(recordEvents[0].location, created);
+  assert.notEqual(recordEvents[0].location, fixture.seededRecord);
+});
+
+test("mapper drops a shelf audit it cannot attribute to one record", (t) => {
+  const directory = temporaryDirectory(t);
+  const fixture = materializeFixture({
+    scenario: {
+      ...sampleRequest.scenario,
+      context: { ...sampleRequest.scenario.context, matching_record_exists: true },
+    },
+    skills: sampleRequest.skills,
+    runRoot: join(directory, "run"),
+  });
+  const wrapper = resolve(root, "evaluation/wrappers/skill-behavior-v1/decision-shelf");
+  const created = spawnSync(wrapper, ["new", "Pick a queue shape"], {
+    cwd: fixture.projectDir,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      DECISION_SHELF_HOME: fixture.shelfDir,
+      SKILL_BEHAVIOR_AUDIT_LOG: fixture.auditLog,
+      PATH: process.env.PATH,
+    },
+  });
+  assert.equal(created.status, 0, created.stderr);
+  const transcript = mapEvents({
+    scenario: sampleRequest.scenario,
+    agentStdout: "",
+    auditRecords: [{ tool: "decision-shelf", argv: ["new", "Pick a queue shape"], status: 0 }],
+    shelfDir: fixture.shelfDir,
+    mode: "live",
+  });
+  assert.deepEqual(
+    transcript.events.filter((event) => event.type === "record"),
+    [],
+  );
+});
+
+test("mapper counts one prototype lane once across proto calls", (t) => {
+  const directory = temporaryDirectory(t);
+  const fixture = materializeFixture({
+    scenario: sampleRequest.scenario,
+    skills: sampleRequest.skills,
+    runRoot: join(directory, "run"),
+  });
+  const wrapper = resolve(root, "evaluation/wrappers/skill-behavior-v1/decision-shelf");
+  const env = {
+    ...process.env,
+    DECISION_SHELF_HOME: fixture.shelfDir,
+    SKILL_BEHAVIOR_AUDIT_LOG: fixture.auditLog,
+    PATH: process.env.PATH,
+  };
+  const options = { cwd: fixture.projectDir, encoding: "utf8", env };
+  const created = spawnSync(wrapper, ["new", "Pick a queue shape"], options);
+  assert.equal(created.status, 0, created.stderr);
+  const recordPath = created.stdout.trim().split(/\r?\n/).at(-1);
+  assert.equal(spawnSync(wrapper, ["proto", recordPath, "new", "wide", "tall"], options).status, 0);
+  assert.equal(spawnSync(wrapper, ["proto", recordPath, "view"], options).status, 0);
+
+  const transcript = mapEvents({
+    scenario: sampleRequest.scenario,
+    agentStdout: "",
+    auditRecords: readAuditRecords(fixture.auditLog),
+    shelfDir: fixture.shelfDir,
+    mode: "live",
+  });
+  const prototypes = transcript.events.filter((event) => event.type === "prototype");
+  assert.equal(prototypes.length, 1);
+  assert.equal(prototypes[0].variants.length, 2);
+  assert.equal(
+    transcript.events.filter((event) => event.type === "record").length,
+    1,
+  );
+  assert.equal(
+    transcript.events.find((event) => event.type === "record").location,
+    recordPath,
+  );
 });
