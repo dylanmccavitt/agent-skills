@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 const scriptPath = fileURLToPath(import.meta.url);
 const repositoryRoot = resolve(dirname(scriptPath), "..");
-export const skillNames = ["compass", "scout", "relay", "cairn"];
+export const skillNames = ["scout", "compass", "relay", "cairn"];
 
 function parseFrontmatter(text, path) {
   const match = text.match(/^---\n([\s\S]*?)\n---\n/);

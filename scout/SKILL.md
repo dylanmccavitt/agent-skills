@@ -1,30 +1,43 @@
 ---
 name: scout
-description: Grill an unclear implementation plan one compact question at a time before work begins. Use when the direction is known but scope, behavior, edges, seams, or done criteria still need decisions. Not for comparing unsettled product or architecture directions; use compass.
+description: Grill-style upfront planning session — interrogate an unclear task one compact question at a time across a fixed sweep, ending in a compact decision brief. Use it when the user names Scout, asks to be grilled on a plan, or wants kinks and decisions worked out before implementation; an explicit request starts the session at once. Otherwise offer it in one line.
 ---
 
 # Scout
 
-Turn an unclear task into decisions the user actually made, one question at a time.
+Turn an unclear task into decisions the user actually made.
 
-## Sweep
+## Session protocol
 
-Move in order through `scope → shape → data → edges → seams → done-looks-like`. Close each territory as ✓ grilled or ⊘ explored/skipped with one reason. Ask one compact question per turn through the host's native input control: two or three mutually exclusive options, recommendation first with its tradeoff. Let repository evidence answer questions it already settles. “I don't know” becomes a named spike.
+- Fixed sweep, in order: `scope → shape → data → edges → seams → done-looks-like`. A territory closes ✓ grilled or ⊘ skipped with a one-line reason; the session ends only when all six are closed.
+- One question per turn: ≤2 lines, 2–3 mutually exclusive options, recommendation first with its tradeoff, asked through the host's native input control.
+- Explore instead of asking when the codebase answers it.
+- After every answer print the ledger, then the decision as one line:
+  `✓N decided · ● <territory> · ○ <remaining>`
+- "I don't know" never stalls: it becomes a named spike in the brief.
 
-After each answer show: `✓N decided · ● <territory> · ○ <remaining>`.
+## Advisor
 
-After the sweep, ask one read-only advisor to catch missed questions or assumptions when the harness supports one. It may add at most two questions. Continue without it when unavailable.
+At each territory border, a subagent reviews for missed questions and wrong assumptions. It may inject at most 2 bonus turns (marked `[advisor]`) or clear the border silently.
 
-## Board and brief
+## Session trace
 
-When artifacts are available, keep one board updated with the sweep and one-line decision cards; chat remains authoritative. End only after all territories close, with numbered decisions, spikes, and Now / Next / Later.
+Hosts read the session as JSONL. Print each beat as one unindented line:
 
-Use `decision-shelf find` to resume the matching shelf record. Create one with `decision-shelf new` only when none exists. Fill its criteria and non-goals, set it `selected`, and return exactly one verified locator line: `Record: <absolute path>` or `Record: none`. Its embedded plan tree is the durable view; `decision-shelf view <record>` prints the stable path.
+- each turn, the ask then its ledger: `{"type":"ledger","turn":1,"text":"✓1 decided · ● scope · ○ shape, data, edges, seams, done-looks-like"}`
+- each border, in sweep order: `{"type":"advisor_review","territory":"scope","bonus_turns":0}`
+- at the end, sweep (all six, in order) then brief: `{"type":"scout_sweep","territories":[{"name":"scope","status":"grilled"},{"name":"shape","status":"skipped","reason":"settled earlier"}]}` then `{"type":"decision_brief","decisions":["..."],"spikes":["..."],"now":"...","next":"...","later":"..."}`
+
+Where artifacts exist, the same beats drive one board.
+
+## Exit brief
+
+Fixed shape, compact: numbered decisions (one line each) · spikes · Now / Next / Later. Deliver it in chat and on the board, then record it once: `decision-shelf new "<question>" --status selected` fills the record and set status `selected` in one call. End with `Record: <absolute path>` as the last line.
 
 ## Evolve the plan
 
-After selection, any material addition, removal, or changed decision—whether requested by the user or discovered by an agent—starts with `decision-shelf propose <record> "<change>"`. Keep the current revision active while the branch is resolved. Use Scout again when the proposal contains unresolved choices.
+After selection, a material change starts with `decision-shelf propose`; the current revision stays active until `checkpoint` folds it or `reject` closes it, and checkpointing needs matching authority.
 
-Fold an accepted branch with `decision-shelf checkpoint <record> <proposal-id>`; close a rejected one with `decision-shelf reject <record> <proposal-id> "<reason>"`. An agent may propose independently, but checkpoints user-authored changes or agent proposals only with matching authority.
+## Soft enforcement
 
-Implementation deviations are stated before the code and in the receipt; they do not silently rewrite the plan or block work.
+Implementation that deviates from a scouted decision says so in one line before the code — then proceeds. No gates, no freeze, no check commands.

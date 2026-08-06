@@ -23,7 +23,8 @@ import { doctorSuite, installSuite, uninstallSuite } from "../bin/install.mjs";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const v1Skills = ["gepetto", "painter", "vigil", "checkpoint", "orchestrate"];
-const currentSkills = ["compass", "scout", "relay", "cairn"];
+const previousSkills = ["compass", "relay", "cairn"];
+const currentSkills = ["scout", ...previousSkills];
 const voiceHook = {
   matcher: ".*",
   hooks: [
@@ -99,7 +100,7 @@ function createManagedCodexV3(codexHome, sourceRoot) {
   const installRoot = join(codexHome, "orchestration-skills");
   const skillsRoot = join(codexHome, "skills");
   mkdirSync(skillsRoot, { recursive: true });
-  for (const skill of currentSkills) {
+  for (const skill of previousSkills) {
     cpSync(join(sourceRoot, skill), join(installRoot, skill), { recursive: true });
     symlinkSync(
       join("..", "orchestration-skills", skill),
@@ -181,24 +182,35 @@ test("managed v1 upgrade migrates the bundle and retires package hooks", () => {
   );
 });
 
-test("codex-only v3 install migrates into the agents bundle", () => {
+test("marker-owned three-skill install gains managed Scout on upgrade", () => {
   const homes = temporaryHomes();
   const { installRoot: legacyRoot, skillsRoot } = createManagedCodexV3(
     homes.codexHome,
     repositoryRoot,
   );
+  assert.deepEqual(
+    readdirSync(legacyRoot).sort(),
+    [".codex-orchestration-install.json", ...previousSkills].sort(),
+  );
+  assert.equal(existsSync(join(legacyRoot, "scout")), false);
 
   const result = installSuite({ ...homes, sourceRoot: repositoryRoot });
 
   assert.equal(result.upgradedFrom, "3.0.0");
   assert.deepEqual(result.leftovers, []);
   assert.equal(existsSync(legacyRoot), false);
-  for (const skill of currentSkills) {
-    assert.equal(
-      resolve(skillsRoot, readlinkSync(join(skillsRoot, skill))),
-      join(result.installRoot, skill),
-    );
+  for (const skillsRoot_ of allSkillRoots(homes)) {
+    for (const skill of currentSkills) {
+      assert.equal(
+        resolve(skillsRoot_, readlinkSync(join(skillsRoot_, skill))),
+        join(result.installRoot, skill),
+      );
+    }
   }
+  assert.equal(
+    readFileSync(join(result.installRoot, "scout", "SKILL.md"), "utf8"),
+    readFileSync(join(repositoryRoot, "scout", "SKILL.md"), "utf8"),
+  );
   const doctor = doctorSuite({ ...homes, sourceRoot: repositoryRoot });
   assert.equal(doctor.ok, true, JSON.stringify(doctor.problems));
 });
@@ -288,6 +300,26 @@ test("refuses to overwrite an unmanaged current skill in any harness root", () =
   );
   assert.equal(existsSync(claudeOwned.agentsHome), false);
   assert.equal(existsSync(join(claudeOwned.codexHome, "skills")), false);
+});
+
+test("unmanaged Scout causes preflight refusal without mutating existing state", () => {
+  const homes = temporaryHomes();
+  const scout = join(homes.agentsHome, "skills", "scout");
+  mkdirSync(scout, { recursive: true });
+  writeFileSync(join(scout, "OWNER"), "unmanaged\n");
+
+  assert.throws(
+    () => installSuite({ ...homes, sourceRoot: repositoryRoot }),
+    /Refusing to replace existing skill/,
+  );
+
+  assert.deepEqual(readdirSync(homes.agentsHome), ["skills"]);
+  assert.deepEqual(readdirSync(join(homes.agentsHome, "skills")), ["scout"]);
+  assert.deepEqual(readdirSync(scout), ["OWNER"]);
+  assert.equal(readFileSync(join(scout, "OWNER"), "utf8"), "unmanaged\n");
+  assert.deepEqual(readdirSync(homes.codexHome), []);
+  assert.equal(existsSync(homes.claudeHome), false);
+  assert.equal(existsSync(join(homes.agentsHome, "agent-skills")), false);
 });
 
 test("refuses a symlinked or unmarked install root", () => {
@@ -580,7 +612,7 @@ test("nested canonical and legacy roots are refused before any mutation", () => 
     existsSync(join(legacyRoot, ".codex-orchestration-install.json")),
     true,
   );
-  for (const skill of currentSkills) {
+  for (const skill of previousSkills) {
     assert.equal(
       lstatSync(join(homes.codexHome, "skills", skill)).isSymbolicLink(),
       true,

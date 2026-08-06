@@ -1,7 +1,7 @@
 {
   "name": "@dylanmccavitt/agent-skills",
   "version": "1.1.0",
-  "description": "Compass, Scout, Relay, and Cairn: lean direction, planning, dispatch, and continuity skills with an external decision shelf CLI.",
+  "description": "Scout, Compass, Relay, and Cairn: lean planning, direction, dispatch, and continuity skills for coding-agent harnesses, with deterministic workflow CLIs.",
   "license": "MIT",
   "author": "Dylan McCavitt",
   "repository": {
@@ -21,17 +21,21 @@
   },
   "files": [
     "bin/",
-    "cairn/",
-    "compass/",
     "scout/",
+    "compass/",
     "relay/",
+    "cairn/",
     "LICENSE",
     "README.md"
   ],
   "scripts": {
     "validate:skills": "node scripts/validate-skills.mjs",
     "test": "npm run validate:skills && node --test test/*.test.mjs",
-    "prepack": "npm test"
+    "prepack": "npm test",
+    "gate": "node scripts/gate.mjs",
+    "gate:live": "node scripts/gate.mjs --live",
+    "gate:accept": "node scripts/gate.mjs --accept",
+    "fanout": "node scripts/fanout.mjs"
   },
   "engines": {
     "node": ">=18"
@@ -39,8 +43,8 @@
   "keywords": [
     "codex",
     "skills",
-    "compass",
     "scout",
+    "compass",
     "relay",
     "cairn",
     "decision-making"

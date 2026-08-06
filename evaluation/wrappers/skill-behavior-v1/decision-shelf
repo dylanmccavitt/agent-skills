@@ -1,0 +1,70 @@
+#!/usr/bin/env node
+import { spawnSync } from "node:child_process";
+import { dirname, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { appendAudit } from "../../adapters/lib/audit-log.mjs";
+
+const here = dirname(fileURLToPath(import.meta.url));
+const repoRoot = resolve(here, "../../..");
+const target = resolve(repoRoot, "bin/decision-shelf.mjs");
+const auditLog = process.env.SKILL_BEHAVIOR_AUDIT_LOG;
+const shelfHome = process.env.DECISION_SHELF_HOME;
+
+if (!auditLog) {
+  console.error("decision-shelf wrapper requires SKILL_BEHAVIOR_AUDIT_LOG");
+  process.exit(2);
+}
+if (!shelfHome) {
+  console.error("decision-shelf wrapper requires DECISION_SHELF_HOME");
+  process.exit(2);
+}
+
+const argv = process.argv.slice(2);
+const run = spawnSync(process.execPath, [target, ...argv], {
+  encoding: "utf8",
+  env: process.env,
+  cwd: process.cwd(),
+  maxBuffer: 8 * 1024 * 1024,
+});
+
+// `status <record>` and `proto view` print a `Record:` locator, but `new`
+// prints the record path alone. Read both forms, and ignore prototype lane
+// files, so every audit names the exact record it touched.
+const shelfRoot = resolve(shelfHome);
+
+function inShelf(path) {
+  return path === shelfRoot || path.startsWith(`${shelfRoot}${sep}`);
+}
+
+function findRecordPath(stdout, stderr) {
+  const locator = `${stdout}\n${stderr}`.match(/Record:\s+(\/[^\r\n]+)/);
+  if (locator && inShelf(locator[1])) return locator[1];
+  const printed = stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(
+      (line) => line.endsWith(".html") && !line.includes(`.proto${sep}`) && inShelf(line),
+    );
+  return printed.at(-1) || null;
+}
+
+const recordPath =
+  run.status === 0 ? findRecordPath(run.stdout || "", run.stderr || "") : null;
+
+appendAudit(auditLog, {
+  tool: "decision-shelf",
+  argv,
+  cwd: process.cwd(),
+  status: run.status,
+  recordPath,
+  envSubset: {
+    DECISION_SHELF_HOME: shelfHome,
+  },
+  stdout: (run.stdout || "").slice(0, 4000),
+  stderr: (run.stderr || "").slice(0, 2000),
+});
+
+if (run.stdout) process.stdout.write(run.stdout);
+if (run.stderr) process.stderr.write(run.stderr);
+process.exit(run.status ?? 1);

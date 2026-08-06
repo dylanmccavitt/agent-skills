@@ -44,7 +44,12 @@ Usage:
                                      List records, newest first, superseded last
                                      (--all: every project; --stale: only records
                                      needing attention)
-  decision-shelf new "<question>"   Create a record for one decision, print its path
+  decision-shelf new "<question>" [--status <status>]
+                                     Create a record for one decision, print its
+                                     path (--status sets the status at creation,
+                                     for a decision that is already made)
+  decision-shelf status <record>     Resume: print what the record says now
+                                     (status, date, staleness) without changing it
   decision-shelf status <record> <status>
                                      Set a record's status (updates the chip,
                                      data-status, and updated date together)
@@ -59,10 +64,14 @@ Usage:
                                      Close a branch and retain its rationale in history
   decision-shelf view <record>       Print the stable absolute path to its visual tree
   decision-shelf bridge <record>     Turn a record's acceptance criteria into failing tests
-  decision-shelf proto <record> new [variant]
+  decision-shelf proto <record> new [variant...]
                                      Create the record's disposable prototype lane
-                                     beside it (and a variant folder with a stub)
-  decision-shelf proto <record> view Print one URL or path per variant
+                                     beside it, one stub folder per variant named;
+                                     naming several prints each variant's URL and
+                                     the record's locator, so one command builds
+                                     a whole comparison
+  decision-shelf proto <record> view Print one URL or path per variant, then the
+                                     record's locator
   decision-shelf proto <record> promote <variant>
                                      Record the surviving variant in the record's
                                      Prototype field and evidence table, one write
@@ -88,8 +97,12 @@ Conventions:
     delivery links once a direction is selected. \`bridge\` scaffolds those
     criteria as failing tests in the current repository, so implementation
     binds to an executable spec instead of prose.
-  - Finish agent responses that touched the shelf with one locator line:
-    "Record: /absolute/path.html" (verified) or "Record: none".
+  - \`status <record>\` with no status resumes a record: it verifies the file,
+    reports what the record says now, and prints its locator line. It resolves
+    a unique record anywhere on the shelf, so a project that moved or was
+    cloned elsewhere can still be picked back up.
+  - Finish agent responses that touched the shelf with that one locator line,
+    copied verbatim: "Record: /absolute/path.html", or "Record: none".
 
 Location: $DECISION_SHELF_HOME, else $XDG_DATA_HOME/decision-shelf, else
 ~/.local/share/decision-shelf.
@@ -493,6 +506,13 @@ function printRecord(path, summary = recordSummary(path), reason = "") {
   if (reason) console.log(`            stale: ${reason}`);
 }
 
+// The locator is the one line a caller repeats verbatim once the record is
+// verified to exist, so the command that verifies it is the command that
+// prints it.
+function locator(recordPath) {
+  console.log(`Record: ${recordPath}`);
+}
+
 function commandPath(shelf, project) {
   console.log(`Shelf:   ${shelf}`);
   console.log(`Project: ${join(shelf, project)}`);
@@ -538,8 +558,32 @@ function commandList(shelf, project, { all = false, stale = false } = {}) {
   }
 }
 
-function commandNew(shelf, project, question, cwd = process.cwd()) {
+// A decision that arrives already made — a scout brief, for example — is one
+// record, not a create followed by a status call, so `new` accepts the status
+// it should be born with.
+function takeStatusFlag(rest) {
+  const args = [];
+  let status = null;
+  for (let index = 0; index < rest.length; index += 1) {
+    const value = rest[index];
+    if (value === "--status") {
+      status = rest[index + 1] ?? "";
+      index += 1;
+    } else if (value.startsWith("--status=")) {
+      status = value.slice("--status=".length);
+    } else args.push(value);
+  }
+  return { args, status };
+}
+
+function commandNew(shelf, project, question, cwd = process.cwd(), status = null) {
   if (!question) throw new Error('provide the decision question: new "<question>"');
+  if (status !== null && !STATUSES.includes(status)) {
+    throw new Error(`unknown status "${status}" (one of: ${STATUSES.join(", ")})`);
+  }
+  if (status === "superseded") {
+    throw new Error("use: decision-shelf supersede <old> <new> — so the successor gets linked");
+  }
   const slug = slugify(question);
   const { directory } = projectDirectoryState(shelf, project, { create: true });
   const existing = listRecords(directory).filter((path) =>
@@ -564,11 +608,12 @@ function commandNew(shelf, project, question, cwd = process.cwd()) {
   // Every CLI-supplied value is HTML-escaped before substitution so it is
   // safe in both text nodes and double-quoted attributes; the question is
   // substituted last and never rescanned.
-  const record = readFileSync(TEMPLATE, "utf8")
+  const filled = readFileSync(TEMPLATE, "utf8")
     .replaceAll("{{CREATED}}", escapeHtml(today))
     .replaceAll("{{REPOSITORY}}", escapeHtml(repository))
     .replaceAll("{{BASE_HEAD}}", escapeHtml(head))
     .replaceAll("{{QUESTION}}", escapeHtml(question));
+  const record = status ? statusTransforms(filled, status, path) : filled;
   // Git metadata collection runs external processes. Revalidate immediately,
   // then create relative to the bound directory identity so a concurrent
   // directory-to-symlink swap cannot redirect the write outside the shelf.
@@ -1084,7 +1129,40 @@ function statusTransforms(text, status, recordPath) {
     .replace(/data-updated="[^"]*"/, `data-updated="${today}"`);
 }
 
+// A record outlives the path its project sat at: a repository that moved, was
+// cloned, or was renamed still has its earlier record on the shelf. Reading
+// one is safe anywhere under the shelf, so the read-only resume view widens to
+// a unique shelf-wide match; every mutation stays bound to this project.
+function resolveReadableRecord(shelf, project, query, usage) {
+  try {
+    return resolveRecord(shelf, project, query, usage);
+  } catch (error) {
+    const needle = basename(query).toLowerCase();
+    if (!needle) throw error;
+    const matches = (existsSync(shelf)
+      ? readdirSync(shelf, { withFileTypes: true })
+          .filter((entry) => entry.isDirectory())
+          .flatMap((entry) => listRecords(join(shelf, entry.name)))
+      : []
+    ).filter((path) => basename(path).toLowerCase().includes(needle));
+    if (matches.length !== 1) throw error;
+    return matches[0];
+  }
+}
+
+// Resuming is a read: it reports what the record says right now, so the caller
+// can refresh live repository state against it before trusting anything.
+function commandResume(shelf, project, rest) {
+  const query = rest.join(" ").trim();
+  if (!query) throw new Error("provide a record: status <record> [status]");
+  const recordPath = resolveReadableRecord(shelf, project, query, "status <record>");
+  const summary = recordSummary(recordPath);
+  printRecord(recordPath, summary, staleReason(summary) || "");
+  locator(recordPath);
+}
+
 function commandStatus(shelf, project, rest) {
+  if (rest.length === 1) return commandResume(shelf, project, rest);
   const status = rest[rest.length - 1];
   const query = rest.slice(0, -1).join(" ").trim();
   if (!query || !status) {
@@ -1252,6 +1330,16 @@ function withOwnedLane(recordState, { create = false, remove = false } = {}, ope
   );
 }
 
+// One line per variant: the name to promote, and the URL to open.
+function printVariants(lane, variants) {
+  const width = Math.max(...variants.map((name) => name.length));
+  for (const name of variants) {
+    const entry = join(lane, name, "index.html");
+    const target = existsSync(entry) ? pathToFileURL(entry).href : join(lane, name);
+    console.log(`${name.padEnd(width)}   ${target}`);
+  }
+}
+
 function commandProto(shelf, project, rest) {
   const [recordQuery, action, ...args] = rest;
   if (!recordQuery || !action) throw new Error(`usage: ${PROTO_USAGE}`);
@@ -1260,49 +1348,57 @@ function commandProto(shelf, project, rest) {
   const recordPath = recordState.path;
   const lane = lanePath(recordPath);
   const variantArg = slugify(args.join(" ").trim() || "");
+  // Variants are compared side by side, so `new` takes them all at once: one
+  // command builds the whole comparison and prints how to view each one.
+  const variantNames = args.map((name) => slugify(name)).filter(Boolean);
 
   if (action === "new") {
-    const entry = withOwnedLane(recordState, { create: true }, ({ lane: boundLane }) => {
-      if (!args.length) return boundLane;
-      const directory = join(boundLane, variantArg);
-      if (existsSync(variantArg)) throw new Error(`variant already exists: ${directory}`);
+    const entries = withOwnedLane(recordState, { create: true }, ({ lane: boundLane }) => {
+      if (!variantNames.length) return [boundLane];
+      if (new Set(variantNames).size !== variantNames.length) {
+        throw new Error(`name each variant once: ${variantNames.join(" ")}`);
+      }
+      // Preflight every name before writing anything, so a clashing variant
+      // refuses the whole command instead of leaving half a comparison.
+      for (const name of variantNames) {
+        if (existsSync(name)) {
+          throw new Error(`variant already exists: ${join(boundLane, name)}`);
+        }
+      }
       const laneIdentity = lstatSync(".", { bigint: true });
-      return withBoundChildDirectory(
-        ".",
-        laneIdentity,
-        variantArg,
-        { create: true },
-        () => {
-          const target = join(directory, "index.html");
+      return variantNames.map((name) =>
+        withBoundChildDirectory(".", laneIdentity, name, { create: true }, () => {
           writeFileSync(
             "index.html",
             [
               "<!doctype html>",
               '<meta charset="utf-8">',
-              `<title>${variantArg} — disposable prototype</title>`,
-              `<p>Disposable prototype variant "${variantArg}". Replace this stub;`,
+              `<title>${name} — disposable prototype</title>`,
+              `<p>Disposable prototype variant "${name}". Replace this stub;`,
               "the lane is deleted after the decision — durable outcome goes in the record.</p>",
               "",
             ].join("\n"),
             { flag: "wx" },
           );
-          return target;
-        },
+          return join(boundLane, name, "index.html");
+        }),
       );
     });
-    console.log(entry);
+    // A comparison is built to be opened, so creating several variants ends
+    // with the same viewable lines `view` prints; a single variant or a bare
+    // lane just reports what was created.
+    if (variantNames.length > 1) {
+      printVariants(lane, variantNames);
+      locator(recordPath);
+    } else for (const entry of entries) console.log(entry);
   } else if (action === "view") {
     const variants = withOwnedLane(recordState, {}, () => laneVariants("."));
     if (variants.length === 0) {
       console.log(`(empty lane) ${lane}`);
       return;
     }
-    const width = Math.max(...variants.map((name) => name.length));
-    for (const name of variants) {
-      const entry = join(lane, name, "index.html");
-      const target = existsSync(entry) ? pathToFileURL(entry).href : join(lane, name);
-      console.log(`${name.padEnd(width)}   ${target}`);
-    }
+    printVariants(lane, variants);
+    locator(recordPath);
   } else if (action === "promote") {
     if (!args.length) throw new Error(`provide the surviving variant: ${PROTO_USAGE}`);
     const directory = join(lane, variantArg);
@@ -1715,7 +1811,10 @@ function main() {
       all: rest.includes("--all"),
       stale: rest.includes("--stale"),
     });
-  else if (command === "new") commandNew(shelf, project, rest.join(" ").trim());
+  else if (command === "new") {
+    const { args, status } = takeStatusFlag(rest);
+    commandNew(shelf, project, args.join(" ").trim(), process.cwd(), status);
+  }
   else if (command === "status") commandStatus(shelf, project, rest);
   else if (command === "supersede") commandSupersede(shelf, project, rest);
   else if (command === "proto") commandProto(shelf, project, rest);

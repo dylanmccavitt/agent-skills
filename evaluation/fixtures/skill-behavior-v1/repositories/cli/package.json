@@ -1,0 +1,5 @@
+{
+  "name": "cli-fixture",
+  "private": true,
+  "type": "module"
+}

@@ -1,0 +1,23 @@
+{
+  "plumbing": {
+    "scenarios_passed": 12,
+    "scenario_pass_rate": 0.5,
+    "activation_accuracy": 0.5,
+    "contract_pass_rate": 0.3617,
+    "false_activation_rate": 0,
+    "adversarial_cases_passed": 25,
+    "recorded_at": "2026-08-06T14:05:03.289Z",
+    "head": "e59d152"
+  },
+  "live": {
+    "scenarios_passed": 21,
+    "scenario_pass_rate": 0.875,
+    "activation_accuracy": 0.9583,
+    "contract_pass_rate": 0.9149,
+    "adversarial_cases_passed": 25,
+    "false_activation_rate": 0,
+    "recorded_at": "2026-08-06T21:43:35.000Z",
+    "head": "36f8841",
+    "note": "Per-metric floor of two consecutive runs at 36f8841: run A scored 23/24 with contract 0.9787 and activation 1.0, run B scored 21/24 with contract 0.9149 and activation 0.9583. Recording the floor of each metric keeps the guard quiet through ordinary variance. The earlier 19/0.8511 floor was depressed by a mapper defect, not by skill quality: proto audits emitted a spurious create record, which failed lawful Compass resume flows. Fixing that recovered the scores. relay.parallel-independent-lanes failed in both runs and is the one standing behavior gap. Live is advisory and nondeterministic; the deterministic plumbing baseline is the strict guard."
+  }
+}

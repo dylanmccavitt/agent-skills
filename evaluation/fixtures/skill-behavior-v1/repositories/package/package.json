@@ -1,0 +1,5 @@
+{
+  "name": "package-fixture",
+  "private": true,
+  "type": "module"
+}

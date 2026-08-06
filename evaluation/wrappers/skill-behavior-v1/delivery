@@ -1,0 +1,45 @@
+#!/usr/bin/env node
+import { spawnSync } from "node:child_process";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { appendAudit } from "../../adapters/lib/audit-log.mjs";
+
+const here = dirname(fileURLToPath(import.meta.url));
+const repoRoot = resolve(here, "../../..");
+const target = resolve(repoRoot, "bin/delivery.mjs");
+const auditLog = process.env.SKILL_BEHAVIOR_AUDIT_LOG;
+
+if (!auditLog) {
+  console.error("delivery wrapper requires SKILL_BEHAVIOR_AUDIT_LOG");
+  process.exit(2);
+}
+
+const argv = process.argv.slice(2);
+const run = spawnSync(process.execPath, [target, ...argv], {
+  encoding: "utf8",
+  env: process.env,
+  cwd: process.cwd(),
+  maxBuffer: 8 * 1024 * 1024,
+});
+
+const headRun = spawnSync("git", ["rev-parse", "HEAD"], {
+  cwd: process.cwd(),
+  encoding: "utf8",
+});
+const head = headRun.status === 0 ? headRun.stdout.trim() : null;
+
+appendAudit(auditLog, {
+  tool: "delivery",
+  argv,
+  cwd: process.cwd(),
+  status: run.status,
+  head,
+  head_source: "local_head",
+  stdout: (run.stdout || "").slice(0, 4000),
+  stderr: (run.stderr || "").slice(0, 2000),
+});
+
+if (run.stdout) process.stdout.write(run.stdout);
+if (run.stderr) process.stderr.write(run.stderr);
+process.exit(run.status ?? 1);

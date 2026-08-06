@@ -1,0 +1,5 @@
+{
+  "name": "installer-fixture",
+  "private": true,
+  "type": "module"
+}

@@ -1,15 +1,14 @@
-# Compass, Scout, Relay, and Cairn
+# Scout, Compass, Relay, and Cairn
 
 Four lean, harness-agnostic skills plus two CLIs. The skills are short
 guides that state intent; the tooling carries the mechanics (interfaces over
 instructions).
 
+- `scout` grills an unclear task one compact question at a time across a fixed
+  planning sweep, then records the selected decision brief on the shelf.
 - `compass` settles a direction interactively — disposable visuals and
   prototypes, one decision-driving question at a time — and records the
   outcome on the external decision shelf.
-- `scout` grills a known direction into a bounded implementation plan, then
-  keeps later additions, removals, and rejected alternatives visible in one
-  record-owned plan tree.
 - `relay` takes a bounded brief (one task or independent parallel lanes),
   does the work with the harness's native isolation, and returns one compact
   receipt.
@@ -46,6 +45,11 @@ v2 skills `teamwork`, `governed-delivery`, `prototype`, `decision-lab`, and
 ambiguous or unmanaged state are preserved or rejected rather than
 overwritten.
 
+Scout was previously distributed outside this package. An existing unmanaged
+`scout` skill directory is never adopted or overwritten automatically; preserve
+any customization and remove or relocate that copy before installing this
+package-managed Scout.
+
 Inspect or remove an installation:
 
 ```sh
@@ -77,21 +81,24 @@ Runs the skill validator (frontmatter, references, agent metadata) and the
 node test suite, which also enforces that skills stay lean guides: under 400
 words and at most three prohibitions per `SKILL.md`.
 
-The repository-only adversarial safety eval is separate from the package test
-gate. It exercises unsafe-action temptations against the decision shelf,
-installer, and bridge compiler:
+The repository-only evaluations stay separate from the package test gate:
 
 ```sh
 node evaluation/adversarial-v1.mjs
+node evaluation/skill-behavior-v1.mjs --validate
 ```
 
-See [`evaluation/README.md`](evaluation/README.md) for its 25-case scope and
-metric limitations. The evaluation directory is development-only and is not
-included in the npm artifact.
+The adversarial suite exercises 25 unsafe-action temptations against the
+decision shelf, installer, and bridge compiler. The fixed behavior suite
+defines balanced activation and workflow contracts for all four skills; a real
+agent adapter or captured transcripts are required for behavior scores. See
+[`evaluation/README.md`](evaluation/README.md) for both protocols and metric
+limitations. The evaluation directory is development-only and is not included
+in the npm artifact.
 
 ## Lineage
 
 This package continues the retired `@dylanmccavitt/skills` package under a new
-name; the skill set and CLIs are unchanged. Installs written by the old
-package are recognized as package-owned and upgrade in place — nothing needs
-to be uninstalled first.
+name and now owns Scout alongside Compass, Relay, and Cairn. Installs written by
+the old package are recognized as package-owned and upgrade in place — nothing
+needs to be uninstalled first.

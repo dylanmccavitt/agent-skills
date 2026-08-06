@@ -18,3 +18,19 @@ Update the one right home with the current state, proof so far, open risks, and 
 ## Resuming
 
 Read the marker, then refresh against live state — files, branches, PRs, checks — before acting. Separate what is settled, what is still open, and what has gone stale since the marker was written. Live state wins over the marker.
+
+## Marker trace
+
+Each action also prints its own JSON line, once per session, so a host can audit continuity. `home` and `destination` name the owning home: `tracker`, `pr`, `decision-shelf`, `memory`, or `commit`.
+
+Pause:
+`{"type":"state_update","home":"tracker","fields":["current_state","proof","open_risks","next_action"]}`
+
+Resume, both lines, refresh first:
+`{"type":"live_refresh","sources":["files","branch","pr","checks"]}`
+`{"type":"resume_summary","sections":["settled","open","stale"]}`
+
+Folding a stray file home, before touching it:
+`{"type":"cleanup_offer","path":"handoff.md","destination":"tracker","remove":true,"authorized":false}`
+
+Removal waits for the user's word, so `authorized` stays false until they give it.

@@ -21,3 +21,15 @@
 - For each finding, record whether it was fixed, rejected, deferred, or blocked.
 - Re-run relevant checks after fixes and request fresh exact-head review.
 - Do not resolve review threads without explicit authorization.
+
+## Improvement loop
+
+- Run `npm run gate` before and after any skill change. It runs skill validation, unit tests, the adversarial suite, and the skill-behavior suite, then writes `evaluation/reports/latest-<mode>.json`.
+- Treat `evaluation/reports/baseline.json` as the record of proven behavior. The gate exits non-zero when a guarded metric regresses.
+- Record a new baseline with `npm run gate:accept` only after a deliberate improvement. State the metric delta in the commit message.
+- Score against a real agent with `npm run gate:live`. It uses `evaluation/adapters/prime-agent-print.mjs`, disables skill discovery, and loads only the fixture skills, so installed skills cannot contaminate the result.
+- A live run costs model tokens and is not deterministic. Read a one-scenario delta as noise. Confirm a live improvement over at least two runs before recording a baseline.
+- The agent command must be absolute. The adapter runs with its working directory set to a throw-away fixture project, so a relative path fails silently into plumbing-shaped results.
+- Dispatch fixes with `node scripts/fanout.mjs`. It converts the latest report into one self-contained brief per failing skill, or per scenario with `--by scenario`.
+- Fix the skill guidance or the CLI. Never edit the evaluator or a scenario to make a case pass.
+- Keep repository conventions in this file. Keep agent-scoped lessons in the harness.
