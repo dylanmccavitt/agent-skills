@@ -1,0 +1,269 @@
+[
+  {
+    "id": "scout.explicit-grill-session",
+    "skill": "scout",
+    "prompt": "Use Scout and grill me on this offline-first sync plan before implementation. Keep going until every planning territory is closed.",
+    "context": {
+      "repository": "mobile-app",
+      "scripted_answers": ["local-first", "event log", "I don't know", "conflict queue", "API boundary", "sync and recovery tests"]
+    },
+    "expected": {
+      "selected": true,
+      "excluded": ["compass"],
+      "assertions": [
+        "scout_one_question_per_turn",
+        "scout_ledger_after_answers",
+        "scout_fixed_sweep",
+        "scout_advisor_borders",
+        "scout_decision_brief",
+        "scout_named_spike",
+        "scout_no_implementation"
+      ]
+    }
+  },
+  {
+    "id": "scout.unclear-plan-with-kinks",
+    "skill": "scout",
+    "prompt": "This migration plan is still fuzzy. Grill me one question at a time so we can expose the missing decisions before anyone codes.",
+    "context": { "repository": "service", "planning_status": "unclear" },
+    "expected": {
+      "selected": true,
+      "excluded": ["compass"],
+      "assertions": ["scout_one_question_per_turn", "scout_no_implementation"]
+    }
+  },
+  {
+    "id": "scout.resume-partial-sweep",
+    "skill": "scout",
+    "prompt": "Resume the Scout session for the import redesign. Scope, shape, and data are settled; finish the remaining sweep and record the brief.",
+    "context": {
+      "repository": "importer",
+      "closed_territories": ["scope", "shape", "data"],
+      "scripted_answers": ["quarantine malformed rows", "adapter boundary", "fixture and rollback acceptance"]
+    },
+    "expected": {
+      "selected": true,
+      "excluded": ["compass"],
+      "assertions": [
+        "scout_one_question_per_turn",
+        "scout_ledger_after_answers",
+        "scout_fixed_sweep",
+        "scout_decision_brief",
+        "scout_no_implementation"
+      ]
+    }
+  },
+  {
+    "id": "scout.visual-product-direction",
+    "skill": "scout",
+    "prompt": "Show me structurally different onboarding flows and help me choose the product direction.",
+    "context": { "repository": "web-app", "surface": "ui", "direction_status": "unsettled" },
+    "expected": { "selected": false, "assertions": [] }
+  },
+  {
+    "id": "scout.settled-implementation",
+    "skill": "scout",
+    "prompt": "Implement the approved queue design exactly as specified and run the focused tests.",
+    "context": { "repository": "worker", "planning_status": "settled" },
+    "expected": { "selected": false, "assertions": [] }
+  },
+  {
+    "id": "scout.simple-question",
+    "skill": "scout",
+    "prompt": "Which Node version does this package support? Give me only the version range.",
+    "context": { "repository": "package", "planning_needed": false },
+    "expected": { "selected": false, "assertions": [] }
+  },
+  {
+    "id": "compass.open-architecture-direction",
+    "skill": "compass",
+    "prompt": "We need to replace our background-job system, but I am torn between a database queue and a managed queue. Help me choose before anyone implements it.",
+    "context": { "repository": "service", "direction_status": "unsettled" },
+    "expected": {
+      "selected": true,
+      "excluded": ["scout"],
+      "assertions": [
+        "compass_one_native_question",
+        "compass_record_locator",
+        "compass_no_implementation",
+        "compass_no_repo_decision_file"
+      ]
+    }
+  },
+  {
+    "id": "compass.visual-ui-comparison",
+    "skill": "compass",
+    "prompt": "I do not know whether onboarding should be a wizard, a checklist dashboard, or an inline guided flow. Make the alternatives concrete so I can choose.",
+    "context": { "repository": "web-app", "direction_status": "unsettled", "surface": "ui" },
+    "expected": {
+      "selected": true,
+      "excluded": ["scout"],
+      "assertions": [
+        "compass_visual_variants",
+        "compass_one_native_question",
+        "compass_record_locator",
+        "compass_no_implementation",
+        "compass_no_repo_decision_file"
+      ]
+    }
+  },
+  {
+    "id": "compass.resume-existing-decision",
+    "skill": "compass",
+    "prompt": "Resume the API-versioning decision we explored last week. Refresh what changed and help me settle the remaining choice.",
+    "context": { "repository": "api", "matching_record_exists": true, "direction_status": "exploring" },
+    "expected": {
+      "selected": true,
+      "excluded": ["scout"],
+      "assertions": [
+        "compass_resumes_record",
+        "compass_one_native_question",
+        "compass_record_locator",
+        "compass_no_implementation",
+        "compass_no_repo_decision_file"
+      ]
+    }
+  },
+  {
+    "id": "compass.settled-requirements",
+    "skill": "compass",
+    "prompt": "Implement the approved PostgreSQL schema in spec/schema.sql exactly as written and run the migration tests.",
+    "context": { "repository": "service", "direction_status": "selected" },
+    "expected": { "selected": false, "assertions": [] }
+  },
+  {
+    "id": "compass.factual-explanation",
+    "skill": "compass",
+    "prompt": "Explain the difference between optimistic and pessimistic locking. I am not making a project decision yet.",
+    "context": { "repository": "none", "direction_status": "none" },
+    "expected": { "selected": false, "assertions": [] }
+  },
+  {
+    "id": "compass.small-bug-fix",
+    "skill": "compass",
+    "prompt": "Fix the typo in the existing error message and run the focused test.",
+    "context": { "repository": "cli", "direction_status": "settled" },
+    "expected": { "selected": false, "assertions": [] }
+  },
+  {
+    "id": "relay.parallel-independent-lanes",
+    "skill": "relay",
+    "prompt": "Parallelize the independent API documentation update and CLI help update, then bring back one reviewable receipt with exact-head evidence.",
+    "context": { "repository": "tooling", "independent_files": ["docs/api.html", "bin/help.mjs"] },
+    "expected": {
+      "selected": true,
+      "assertions": [
+        "relay_bounded_brief",
+        "relay_parallel_independent_lanes",
+        "relay_receipt",
+        "relay_no_external_effect"
+      ]
+    }
+  },
+  {
+    "id": "relay.tracked-leaf-delivery",
+    "skill": "relay",
+    "prompt": "Take issue 42 through its existing branch, focused checks, and independent review. Stop when the pull request is ready; do not merge it.",
+    "context": { "repository": "library", "issue": 42, "leaf_issue": true },
+    "expected": {
+      "selected": true,
+      "assertions": [
+        "relay_bounded_brief",
+        "relay_serial_or_local_execution",
+        "relay_receipt",
+        "relay_no_external_effect"
+      ]
+    }
+  },
+  {
+    "id": "relay.bounded-single-task",
+    "skill": "relay",
+    "prompt": "Take this bounded installer bug fix, preserve unrelated changes, run the documented checks, and return a compact receipt.",
+    "context": { "repository": "installer", "parallelizable": false },
+    "expected": {
+      "selected": true,
+      "assertions": [
+        "relay_bounded_brief",
+        "relay_serial_or_local_execution",
+        "relay_receipt",
+        "relay_no_external_effect"
+      ]
+    }
+  },
+  {
+    "id": "relay.trivial-local-edit",
+    "skill": "relay",
+    "prompt": "Change this one local constant from 10 to 12 and run its existing unit test.",
+    "context": { "repository": "library", "changed_files": 1, "parallelizable": false },
+    "expected": { "selected": false, "assertions": [] }
+  },
+  {
+    "id": "relay.unsettled-direction",
+    "skill": "relay",
+    "prompt": "I am unsure whether this service should remain a monolith or split into services. Help me compare the direction before implementation.",
+    "context": { "repository": "service", "direction_status": "unsettled" },
+    "expected": { "selected": false, "assertions": [] }
+  },
+  {
+    "id": "relay.read-only-answer",
+    "skill": "relay",
+    "prompt": "Read the configuration and tell me which Node version this package supports.",
+    "context": { "repository": "package", "write_requested": false },
+    "expected": { "selected": false, "assertions": [] }
+  },
+  {
+    "id": "cairn.pause-substantial-work",
+    "skill": "cairn",
+    "prompt": "Pause this migration work so another session can continue safely tomorrow. Preserve what is done, proof so far, risks, and the exact next action.",
+    "context": { "repository": "migration", "tracker_issue": 77, "work_state": "in_progress" },
+    "expected": {
+      "selected": true,
+      "assertions": ["cairn_proper_home", "cairn_no_repo_planning_file"]
+    }
+  },
+  {
+    "id": "cairn.resume-stale-marker",
+    "skill": "cairn",
+    "prompt": "Resume the work from the existing handoff marker, but verify it against the branch, files, PR, and current checks before doing anything.",
+    "context": { "repository": "service", "marker_age_days": 5, "live_state_changed": true },
+    "expected": {
+      "selected": true,
+      "assertions": [
+        "cairn_live_refresh",
+        "cairn_resume_sections",
+        "cairn_no_repo_planning_file"
+      ]
+    }
+  },
+  {
+    "id": "cairn.stray-planning-file",
+    "skill": "cairn",
+    "prompt": "There is a handoff.md in the repository. Move its useful state to the right durable home and clean up the stray file safely.",
+    "context": { "repository": "cli", "stray_file": "handoff.md", "tracker_issue": 18 },
+    "expected": {
+      "selected": true,
+      "assertions": ["cairn_cleanup_offer", "cairn_no_repo_planning_file"]
+    }
+  },
+  {
+    "id": "cairn.completed-work",
+    "skill": "cairn",
+    "prompt": "The task is complete, merged, and verified. Give me a two-sentence summary of the result.",
+    "context": { "repository": "service", "work_state": "complete" },
+    "expected": { "selected": false, "assertions": [] }
+  },
+  {
+    "id": "cairn.repo-triage-only",
+    "skill": "cairn",
+    "prompt": "List the open pull requests and dirty worktrees. Do not resume or modify any work.",
+    "context": { "repository": "monorepo", "resume_requested": false },
+    "expected": { "selected": false, "assertions": [] }
+  },
+  {
+    "id": "cairn.short-factual-answer",
+    "skill": "cairn",
+    "prompt": "Which file contains the package version? Just give me the path.",
+    "context": { "repository": "package", "continuity_needed": false },
+    "expected": { "selected": false, "assertions": [] }
+  }
+]

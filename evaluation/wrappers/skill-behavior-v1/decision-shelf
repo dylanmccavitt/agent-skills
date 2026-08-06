@@ -1,0 +1,55 @@
+#!/usr/bin/env node
+import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { appendAudit } from "../../adapters/lib/audit-log.mjs";
+
+const here = dirname(fileURLToPath(import.meta.url));
+const repoRoot = resolve(here, "../../..");
+const target = resolve(repoRoot, "bin/decision-shelf.mjs");
+const auditLog = process.env.SKILL_BEHAVIOR_AUDIT_LOG;
+const shelfHome = process.env.DECISION_SHELF_HOME;
+
+if (!auditLog) {
+  console.error("decision-shelf wrapper requires SKILL_BEHAVIOR_AUDIT_LOG");
+  process.exit(2);
+}
+if (!shelfHome) {
+  console.error("decision-shelf wrapper requires DECISION_SHELF_HOME");
+  process.exit(2);
+}
+
+const argv = process.argv.slice(2);
+const run = spawnSync(process.execPath, [target, ...argv], {
+  encoding: "utf8",
+  env: process.env,
+  cwd: process.cwd(),
+  maxBuffer: 8 * 1024 * 1024,
+});
+
+let recordPath = null;
+const combined = `${run.stdout || ""}\n${run.stderr || ""}`;
+const match = combined.match(/Record:\s+(\/[^\r\n]+)/);
+if (match) recordPath = match[1];
+else if (existsSync(shelfHome)) {
+  // leave null; mapper can discover later
+}
+
+appendAudit(auditLog, {
+  tool: "decision-shelf",
+  argv,
+  cwd: process.cwd(),
+  status: run.status,
+  recordPath,
+  envSubset: {
+    DECISION_SHELF_HOME: shelfHome,
+  },
+  stdout: (run.stdout || "").slice(0, 4000),
+  stderr: (run.stderr || "").slice(0, 2000),
+});
+
+if (run.stdout) process.stdout.write(run.stdout);
+if (run.stderr) process.stderr.write(run.stderr);
+process.exit(run.status ?? 1);

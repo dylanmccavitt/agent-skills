@@ -1,0 +1,5 @@
+{
+  "name": "worker-fixture",
+  "private": true,
+  "type": "module"
+}
