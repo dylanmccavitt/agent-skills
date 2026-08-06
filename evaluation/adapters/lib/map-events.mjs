@@ -132,7 +132,10 @@ function eventsFromAudits(auditRecords, shelfDir) {
     if (record.tool === "decision-shelf") {
       const argv = record.argv || [];
       const statusResume = isStatusResume(argv);
-      if (argv[0] === "new" || statusResume || argv[0] === "proto") {
+      // `proto` builds disposable prototype lanes; it never creates or refreshes
+      // the durable record. Emitting a record event for it turned a lawful
+      // resume-then-prototype flow into "create,resume" and failed the contract.
+      if (argv[0] === "new" || statusResume) {
         const location = resolveShelfRecord(record, shelfDir);
         if (location) {
           events.push({

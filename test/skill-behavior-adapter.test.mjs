@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -346,4 +346,37 @@ test("mapper counts one prototype lane once across proto calls", (t) => {
     transcript.events.find((event) => event.type === "record").location,
     recordPath,
   );
+});
+
+test("a proto audit does not emit a record event", () => {
+  const shelf = mkdtempSync(join(tmpdir(), "map-events-proto-"));
+  const project = join(shelf, "local--project--abcd1234");
+  mkdirSync(project, { recursive: true });
+  const recordPath = join(project, "2026-01-01-a-decision.html");
+  writeFileSync(recordPath, '<html data-status="selected"></html>');
+  const lane = recordPath.replace(/\.html$/, ".proto");
+  for (const view of ["one", "two"]) {
+    mkdirSync(join(lane, view), { recursive: true });
+    writeFileSync(join(lane, view, "index.html"), `<html>${view}</html>`);
+  }
+
+  // A lawful compass resume: read-only status, then prototype work on the same
+  // record. The contract wants exactly one record event, and it must be resume.
+  const transcript = mapEvents({
+    scenario: { id: "compass.resume", prompt: "p", expected: {} },
+    agentStdout: "",
+    agentStderr: "",
+    auditRecords: [
+      { tool: "decision-shelf", argv: ["status", recordPath], recordPath },
+      { tool: "decision-shelf", argv: ["proto", recordPath, "view"], recordPath },
+    ],
+    shelfDir: shelf,
+    mode: "live",
+  });
+
+  const records = transcript.events.filter((event) => event.type === "record");
+  assert.equal(records.length, 1, JSON.stringify(records));
+  assert.equal(records[0].action, "resume");
+  assert.equal(transcript.events.filter((e) => e.type === "prototype").length, 1);
+  rmSync(shelf, { recursive: true, force: true });
 });
