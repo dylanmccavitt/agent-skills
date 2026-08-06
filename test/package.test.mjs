@@ -5,7 +5,7 @@ import { resolve } from "node:path";
 import test from "node:test";
 
 const root = resolve(new URL("..", import.meta.url).pathname);
-const expectedDirectories = ["bin/", "cairn/", "compass/", "relay/"];
+const expectedDirectories = ["bin/", "scout/", "compass/", "relay/", "cairn/"];
 
 test("package allowlist ships only the skills, CLIs, and docs", () => {
   const pkg = JSON.parse(readFileSync(resolve(root, "package.json")));
@@ -50,6 +50,8 @@ test("packed npm artifact contains the exact skill and CLI surface", () => {
     "bin/decision-shelf.mjs",
     "bin/delivery.mjs",
     "bin/install.mjs",
+    "scout/SKILL.md",
+    "scout/agents/openai.yaml",
     "cairn/SKILL.md",
     "cairn/agents/openai.yaml",
     "compass/SKILL.md",

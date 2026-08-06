@@ -1,0 +1,4 @@
+interface:
+  display_name: "Scout"
+  short_description: "Grill unclear plans into a decision brief"
+  default_prompt: "Use $scout to grill this unclear task one compact question at a time, close the full planning sweep, and return a recorded decision brief."

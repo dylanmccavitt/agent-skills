@@ -71,7 +71,7 @@ test("HTML and repository metadata helpers remove executable and secret-bearing 
 });
 
 test("shipped skills satisfy discovery and reference contracts", () => {
-  assert.deepEqual(skillNames, ["compass", "relay", "cairn"]);
+  assert.deepEqual(skillNames, ["scout", "compass", "relay", "cairn"]);
   for (const name of skillNames) {
     assert.equal(validateSkill(root, name), true);
   }
@@ -88,6 +88,36 @@ test("skills stay lean guides, not rulebooks", () => {
       `${name}/SKILL.md has ${prohibitions} prohibitions; state intent instead`,
     );
   }
+});
+
+test("scout keeps its bounded grill protocol and decision handoff", () => {
+  const scout = readFileSync(resolve(root, "scout", "SKILL.md"), "utf8");
+
+  assert.match(
+    scout,
+    /scope → shape → data → edges → seams → done-looks-like[\s\S]*all six are closed/i,
+  );
+  assert.match(scout, /One question per turn:[\s\S]*host's native input control/i);
+  assert.match(scout, /After every answer print the ledger/);
+  assert.match(scout, /✓N decided · ● <territory> · ○ <remaining>/);
+  assert.match(
+    scout,
+    /At each territory border, a subagent reviews[\s\S]*at most 2 bonus turns[\s\S]*\[advisor\]/i,
+  );
+  assert.match(scout, /"I don't know"[\s\S]*named spike in the brief/i);
+  assert.match(
+    scout,
+    /Fixed shape, compact: numbered decisions \(one line each\) · spikes · Now \/ Next \/ Later/i,
+  );
+  assert.match(
+    scout,
+    /decision-shelf new[\s\S]*set status `selected`[\s\S]*Record: <absolute path>/i,
+  );
+  assert.match(
+    scout,
+    /Implementation that deviates[\s\S]*one line before the code[\s\S]*then proceeds/i,
+  );
+  assert.match(scout, /No gates, no freeze, no check commands/i);
 });
 
 test("compass keeps the visual-first interactive decision loop", () => {

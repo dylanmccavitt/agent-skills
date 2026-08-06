@@ -30,7 +30,7 @@ const MARKER_FILE = ".agent-skills-install.json";
 // or remove, never foreign.
 const LEGACY_INSTALL_DIRECTORY = "orchestration-skills";
 const LEGACY_MARKER_FILE = ".codex-orchestration-install.json";
-const SKILLS = ["compass", "relay", "cairn"];
+const SKILLS = ["scout", "compass", "relay", "cairn"];
 const RETIRED_SKILLS = [
   "teamwork",
   "governed-delivery",
@@ -844,7 +844,7 @@ function parseArguments(arguments_) {
 
 function printHelp() {
   console.log(
-    "Install the Compass, Relay, and Cairn skills for every local harness\n\n" +
+    "Install the Scout, Compass, Relay, and Cairn skills for every local harness\n\n" +
       "The managed bundle lives under ~/.agents/agent-skills; skill\n" +
       "links are created in ~/.agents/skills, $CODEX_HOME/skills, and\n" +
       "~/.claude/skills.\n\n" +

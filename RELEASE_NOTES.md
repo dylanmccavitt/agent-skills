@@ -1,3 +1,14 @@
+# Unreleased — Scout ownership and behavior evaluation
+
+- Scout is now the fourth physical package-owned skill alongside Compass,
+  Relay, and Cairn. Fresh installs link it into every supported harness, and
+  marker-owned three-skill installations gain it on upgrade.
+- Existing unmanaged Scout entries are refused rather than adopted or
+  overwritten; preserve any customization and relocate that copy before
+  installing the package-managed skill.
+- The fixed behavior evaluator now covers 24 balanced scenarios across all
+  four skills and rejects Scout/Compass co-selection in their boundary cases.
+
 # v1.1.0 — Decision record lifecycle and prototype lanes
 
 `decision-shelf` gains a full record lifecycle and disposable prototype lanes.
