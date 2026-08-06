@@ -9,7 +9,11 @@ const expectedDirectories = ["bin/", "scout/", "compass/", "relay/", "cairn/"];
 
 test("package allowlist ships only the skills, CLIs, and docs", () => {
   const pkg = JSON.parse(readFileSync(resolve(root, "package.json")));
-  assert.equal(pkg.version, "1.1.0");
+  assert.equal(pkg.version, "1.2.0");
+  // The pin is a release tripwire. Tie it to the notes as well, so a version can
+  // never ship without a section describing it.
+  const notes = readFileSync(resolve(root, "RELEASE_NOTES.md"), "utf8");
+  assert.equal(notes.split("\n")[0], `# v${pkg.version} — Scout ownership and behavior evaluation`);
   assert.deepEqual(pkg.bin, {
     "agent-skills": "bin/install.mjs",
     "decision-shelf": "bin/decision-shelf.mjs",
