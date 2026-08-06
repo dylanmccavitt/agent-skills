@@ -1,12 +1,15 @@
-# Compass, Relay, and Cairn
+# Compass, Scout, Relay, and Cairn
 
-Three lean, harness-agnostic skills plus two CLIs. The skills are short
+Four lean, harness-agnostic skills plus two CLIs. The skills are short
 guides that state intent; the tooling carries the mechanics (interfaces over
 instructions).
 
 - `compass` settles a direction interactively — disposable visuals and
   prototypes, one decision-driving question at a time — and records the
   outcome on the external decision shelf.
+- `scout` grills a known direction into a bounded implementation plan, then
+  keeps later additions, removals, and rejected alternatives visible in one
+  record-owned plan tree.
 - `relay` takes a bounded brief (one task or independent parallel lanes),
   does the work with the harness's native isolation, and returns one compact
   receipt.

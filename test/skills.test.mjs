@@ -14,12 +14,15 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, delimiter, join, resolve } from "node:path";
+import { basename, delimiter, dirname, join, resolve } from "node:path";
 import test from "node:test";
 
 import {
+  checkpointPlan,
   escapeHtml,
   mutateProjectRecord,
+  proposePlan,
+  rejectPlan,
   sanitizeRepositoryIdentity,
   staleReason,
   writeFileInDirectory,
@@ -71,7 +74,7 @@ test("HTML and repository metadata helpers remove executable and secret-bearing 
 });
 
 test("shipped skills satisfy discovery and reference contracts", () => {
-  assert.deepEqual(skillNames, ["compass", "relay", "cairn"]);
+  assert.deepEqual(skillNames, ["compass", "scout", "relay", "cairn"]);
   for (const name of skillNames) {
     assert.equal(validateSkill(root, name), true);
   }
@@ -102,6 +105,7 @@ test("compass keeps the visual-first interactive decision loop", () => {
   assert.match(compass, /Record: <absolute path>/);
   assert.match(compass, /Record: none/);
   assert.match(compass, /\$relay/);
+  assert.match(compass, /\$scout/);
 
   const record = readFileSync(
     resolve(root, "compass", "assets", "decision-record.html"),
@@ -112,6 +116,19 @@ test("compass keeps the visual-first interactive decision loop", () => {
   assert.match(record, /<h2 id="bridge">Bridge<\/h2>/);
   assert.match(record, /data-repository=/);
   assert.match(record, /data-base-head=/);
+});
+
+test("scout keeps planning bounded and evolves selected plans through the tree", () => {
+  const scout = readFileSync(resolve(root, "scout", "SKILL.md"), "utf8");
+  assert.match(scout, /scope → shape → data → edges → seams → done-looks-like/);
+  assert.match(scout, /one compact question per turn/i);
+  assert.match(scout, /one read-only advisor/i);
+  assert.match(scout, /resume the matching shelf record/i);
+  assert.match(scout, /decision-shelf propose/);
+  assert.match(scout, /decision-shelf checkpoint/);
+  assert.match(scout, /decision-shelf reject/);
+  assert.match(scout, /decision-shelf view/);
+  assert.match(scout, /do not silently rewrite the plan/i);
 });
 
 test("relay keeps briefs bounded and receipts compact", () => {
@@ -228,6 +245,149 @@ test("decision-shelf new fills only CLI slots and leaves hand-edit placeholders 
   assert.match(record, /<td>YYYY-MM-DD<\/td>/);
   assert.match(record, /<dt>Last verified<\/dt><dd>UNVERIFIED<\/dd>/);
   assert.doesNotMatch(record, /Adopt titles for recordsS/);
+  assert.match(record, /data-plan-revision="1"/);
+  assert.match(record, /<h2 id="plan-tree-heading">Plan tree<\/h2>/);
+});
+
+test("plan proposals stay in one visual record and fold into checkpoint history", () => {
+  const cli = resolve(root, "bin", "decision-shelf.mjs");
+  const shelf = mkdtempSync(join(tmpdir(), "decision-shelf-plan-tree-"));
+  const workspace = mkdtempSync(join(tmpdir(), "decision-shelf-repo-"));
+  const env = { ...process.env, DECISION_SHELF_HOME: shelf };
+  const run = (args) =>
+    spawnSync(process.execPath, [cli, ...args], {
+      cwd: workspace,
+      env,
+      encoding: "utf8",
+    });
+
+  const created = run(["new", "Plan resumable sessions"]);
+  assert.equal(created.status, 0, created.stderr);
+  const record = created.stdout.trim();
+  assert.equal(run(["status", record, "selected"]).status, 0);
+
+  const proposed = run(["propose", record, "Add <safe> resume detection"]);
+  assert.equal(proposed.status, 0, proposed.stderr);
+  assert.match(proposed.stdout, /^P1:/);
+  let html = readFileSync(record, "utf8");
+  assert.match(html, /data-proposal-id="P1" data-proposal-status="open"/);
+  assert.match(html, /Add &lt;safe&gt; resume detection/);
+  assert.doesNotMatch(html, /<li class="empty">/);
+
+  const second = run(["propose", record, "Require duplicate protection"]);
+  assert.equal(second.status, 0, second.stderr);
+  assert.match(second.stdout, /^P2:/);
+
+  html = readFileSync(record, "utf8");
+  const reformatted = html.replace("</ul>\n        </div>", "</ul>\n          </div>");
+  assert.notEqual(reformatted, html, "the fixture reformats the current-plan container");
+  writeFileSync(record, reformatted);
+
+  const accepted = run(["checkpoint", record, "P1"]);
+  assert.equal(accepted.status, 0, accepted.stderr);
+  html = readFileSync(record, "utf8");
+  assert.match(html, /data-plan-revision="2"/);
+  assert.match(html, /<span data-current-revision>2<\/span>/);
+  assert.match(html, /data-accepted-revision="2">Add &lt;safe&gt; resume detection/);
+  assert.match(html, /Revision 2 · accepted Add &lt;safe&gt; resume detection/);
+  assert.doesNotMatch(html, /data-proposal-id="P1"/);
+  assert.match(html, /data-proposal-id="P2"/);
+
+  const rejected = run(["reject", record, "P2", "Too much for this release"]);
+  assert.equal(rejected.status, 0, rejected.stderr);
+  html = readFileSync(record, "utf8");
+  assert.match(html, /Rejected P2 · Require duplicate protection — Too much for this release/);
+  assert.match(html, /<li class="empty">No open branches<\/li>/);
+  assert.equal((html.match(/<section id="plan-tree"/g) || []).length, 1);
+
+  const viewed = run(["view", record]);
+  assert.equal(viewed.status, 0, viewed.stderr);
+  assert.equal(viewed.stdout.trim(), record);
+});
+
+test("plan tree mutations require selected managed records", () => {
+  const cli = resolve(root, "bin", "decision-shelf.mjs");
+  const shelf = mkdtempSync(join(tmpdir(), "decision-shelf-plan-guard-"));
+  const workspace = mkdtempSync(join(tmpdir(), "decision-shelf-repo-"));
+  const env = { ...process.env, DECISION_SHELF_HOME: shelf };
+  const run = (args) =>
+    spawnSync(process.execPath, [cli, ...args], { cwd: workspace, env, encoding: "utf8" });
+  const created = run(["new", "Guard plan mutations"]);
+  const record = created.stdout.trim();
+  const before = readFileSync(record, "utf8");
+  const refused = run(["propose", record, "Change the plan"]);
+  assert.notEqual(refused.status, 0);
+  assert.match(refused.stderr, /require a selected record/);
+  assert.equal(readFileSync(record, "utf8"), before);
+});
+
+test("plan mutations stay bound to opened records during path replacement", () => {
+  const cli = resolve(root, "bin", "decision-shelf.mjs");
+  const shelf = mkdtempSync(join(tmpdir(), "decision-shelf-plan-bound-"));
+  const workspace = mkdtempSync(join(tmpdir(), "decision-shelf-plan-bound-repo-"));
+  const outside = mkdtempSync(join(tmpdir(), "decision-shelf-plan-bound-outside-"));
+  const victim = join(outside, "victim.html");
+  const env = { ...process.env, DECISION_SHELF_HOME: shelf };
+  writeFileSync(victim, "outside\n");
+  const run = (args) =>
+    spawnSync(process.execPath, [cli, ...args], {
+      cwd: workspace,
+      env,
+      encoding: "utf8",
+    });
+  const createSelected = (question, proposal = "") => {
+    const created = run(["new", question]);
+    assert.equal(created.status, 0, created.stderr);
+    const record = created.stdout.trim();
+    assert.equal(run(["status", record, "selected"]).status, 0);
+    if (proposal) assert.equal(run(["propose", record, proposal]).status, 0);
+    return record;
+  };
+  const swapAfterTransform = (record, captured) =>
+    (shelfRoot, project, recordPath, transform) =>
+      mutateProjectRecord(shelfRoot, project, recordPath, (text, safePath) => {
+        const replacement = transform(text, safePath);
+        renameSync(record, captured);
+        symlinkSync(victim, record);
+        return replacement;
+      });
+
+  const proposedRecord = createSelected("Bind plan proposal");
+  const proposedCaptured = join(dirname(proposedRecord), "captured-proposal.html");
+  proposePlan(
+    shelf,
+    basename(dirname(proposedRecord)),
+    proposedRecord,
+    "Keep proposal bound",
+    swapAfterTransform(proposedRecord, proposedCaptured),
+  );
+  assert.match(readFileSync(proposedCaptured, "utf8"), /Keep proposal bound/);
+  assert.equal(readFileSync(victim, "utf8"), "outside\n");
+
+  const checkpointRecord = createSelected("Bind plan checkpoint", "Accept safely");
+  const checkpointCaptured = join(dirname(checkpointRecord), "captured-checkpoint.html");
+  checkpointPlan(
+    shelf,
+    basename(dirname(checkpointRecord)),
+    checkpointRecord,
+    "P1",
+    swapAfterTransform(checkpointRecord, checkpointCaptured),
+  );
+  assert.match(readFileSync(checkpointCaptured, "utf8"), /accepted Accept safely/);
+  assert.equal(readFileSync(victim, "utf8"), "outside\n");
+
+  const rejectedRecord = createSelected("Bind plan rejection", "Reject safely");
+  const rejectedCaptured = join(dirname(rejectedRecord), "captured-rejection.html");
+  rejectPlan(
+    shelf,
+    basename(dirname(rejectedRecord)),
+    rejectedRecord,
+    "P1",
+    "Not now",
+    swapAfterTransform(rejectedRecord, rejectedCaptured),
+  );
+  assert.match(readFileSync(rejectedCaptured, "utf8"), /Rejected P1 · Reject safely — Not now/);
+  assert.equal(readFileSync(victim, "utf8"), "outside\n");
 });
 
 test("staleReason marks records stale on exactly day 30", () => {

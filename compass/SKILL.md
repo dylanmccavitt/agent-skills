@@ -1,6 +1,6 @@
 ---
 name: compass
-description: Explore and settle a product, project, or architecture direction interactively before implementation. Use when the user is unsure where to go next, wants alternatives made concrete and compared, or needs a decision recorded or resumed. Not for decisions already settled by requirements.
+description: Explore and settle a product, project, or architecture direction interactively before implementation. Use when the user is unsure where to go next or wants alternatives made concrete and compared. When direction is known but implementation decisions remain, use scout.
 ---
 
 # Compass
@@ -22,3 +22,5 @@ Durable decision state lives on the external decision shelf, never as markdown f
 End with the decision status and exactly one locator line: `Record: <absolute path>` after verifying the file exists, or `Record: none`.
 
 A `selected` record authorizes preparing implementation, not implementing. `decision-shelf bridge` turns its acceptance criteria into failing tests, so delivery binds to an executable spec. Hand delivery to `$relay` when the user asks for it.
+
+When the direction is settled but the implementation plan still has unresolved scope, edges, or done criteria, hand it to `$scout`.
