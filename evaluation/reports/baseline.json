@@ -10,14 +10,14 @@
     "head": "e59d152"
   },
   "live": {
-    "scenarios_passed": 19,
-    "scenario_pass_rate": 0.7917,
-    "activation_accuracy": 1,
-    "contract_pass_rate": 0.8511,
-    "false_activation_rate": 0,
+    "scenarios_passed": 21,
+    "scenario_pass_rate": 0.875,
+    "activation_accuracy": 0.9583,
+    "contract_pass_rate": 0.9149,
     "adversarial_cases_passed": 25,
-    "recorded_at": "2026-08-06T21:24:12.000Z",
-    "head": "739a68c",
-    "note": "Floor of four observed live runs, not a target. Measured scenarios_passed across runs: 24 and 21 at ebe1603, then 21 and 19 at 739a68c. Contract rate ranged 1.0 to 0.8511. Only scout.resume-partial-sweep failed in every run; the rest of the failure set changed run to run, so live scoring is dominated by agent nondeterminism rather than by skill quality. The baseline is therefore set to the lowest observed run so the guard flags a genuine collapse instead of ordinary variance. Treat live as advisory and confirm any live movement over at least two runs. The deterministic plumbing baseline is the strict guard."
+    "false_activation_rate": 0,
+    "recorded_at": "2026-08-06T21:43:35.000Z",
+    "head": "36f8841",
+    "note": "Per-metric floor of two consecutive runs at 36f8841: run A scored 23/24 with contract 0.9787 and activation 1.0, run B scored 21/24 with contract 0.9149 and activation 0.9583. Recording the floor of each metric keeps the guard quiet through ordinary variance. The earlier 19/0.8511 floor was depressed by a mapper defect, not by skill quality: proto audits emitted a spurious create record, which failed lawful Compass resume flows. Fixing that recovered the scores. relay.parallel-independent-lanes failed in both runs and is the one standing behavior gap. Live is advisory and nondeterministic; the deterministic plumbing baseline is the strict guard."
   }
 }
