@@ -10,14 +10,14 @@
     "head": "e59d152"
   },
   "live": {
-    "scenarios_passed": 22,
-    "scenario_pass_rate": 0.9167,
+    "scenarios_passed": 21,
+    "scenario_pass_rate": 0.875,
     "activation_accuracy": 1,
-    "contract_pass_rate": 0.9362,
+    "contract_pass_rate": 0.9149,
     "false_activation_rate": 0,
-    "recorded_at": "2026-08-06T17:34:14.529915Z",
-    "head": "e59d152",
-    "stale": true,
-    "note": "STALE — do not treat as proven. Recorded from the lower of two consecutive live runs (contract 0.9574 and 0.9362) while the audit event mapper still fabricated contract fields: it hard-coded record status \"selected\", scored status writes as resume, and asserted structurally different prototype variants without reading the proto lane. These numbers are therefore inflated. Re-record with two consecutive `npm run gate:live` runs against the tightened mapper before trusting or guarding them."
+    "adversarial_cases_passed": 25,
+    "recorded_at": "2026-08-06T20:44:40.000Z",
+    "head": "ebe1603",
+    "note": "Recorded from the lower of two consecutive live runs against the tightened audit event mapper: run 1 scored 24/24 with contract 1.0, run 2 scored 21/24 with contract 0.9149. Run 2 is taken wholesale because it is lower or equal on every guarded metric, so the baseline is a floor rather than a peak. Live scoring is nondeterministic; the run-2 shortfalls were scout.explicit-grill-session, scout.resume-partial-sweep, and relay.bounded-single-task. This supersedes the stale entry recorded at e59d152, which was inflated by the pre-fix mapper."
   }
 }
