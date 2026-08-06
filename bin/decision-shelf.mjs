@@ -3,7 +3,7 @@
 // The decision shelf: durable, agent-agnostic decision records kept outside
 // every repository. This CLI is the interface; its help text is the manual.
 
-import { execFileSync } from "node:child_process";
+import { createRequire } from "node:module";
 import { createHash, randomUUID } from "node:crypto";
 import {
   closeSync,
@@ -22,9 +22,10 @@ import {
   writeSync,
   writeFileSync,
 } from "node:fs";
-import { homedir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+
+const require = createRequire(import.meta.url);
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const TEMPLATE = join(packageRoot, "compass", "assets", "decision-record.html");
@@ -95,6 +96,7 @@ Location: $DECISION_SHELF_HOME, else $XDG_DATA_HOME/decision-shelf, else
 `;
 
 function git(args, cwd) {
+  const { execFileSync } = require("node:child_process");
   try {
     return execFileSync("git", args, {
       cwd,
@@ -105,6 +107,41 @@ function git(args, cwd) {
     return "";
   }
 }
+function isBareRepositoryRoot(directory) {
+  if (
+    !existsSync(join(directory, "HEAD")) ||
+    !existsSync(join(directory, "objects")) ||
+    !existsSync(join(directory, "refs")) ||
+    !existsSync(join(directory, "config"))
+  ) {
+    return false;
+  }
+  // Git validates HEAD before it accepts a directory as a repository. An
+  // ordinary folder that merely holds a file named HEAD is not a repository.
+  try {
+    const head = readFileSync(join(directory, "HEAD"), "utf8").trim();
+    return /^ref:\s*refs\/\S+$/.test(head) || /^[0-9a-f]{40,64}$/.test(head);
+  } catch {
+    return false;
+  }
+}
+
+// Git resolves a repository from any directory inside a bare repository, so
+// project identity walks up to the same bare root. The bare root is returned
+// because `rev-parse --show-toplevel` has no work tree to report there.
+function findGitRepository(cwd) {
+  if (process.env.GIT_DIR) return { found: true, bareRoot: "" };
+
+  let directory = cwd;
+  while (true) {
+    if (existsSync(join(directory, ".git"))) return { found: true, bareRoot: "" };
+    if (isBareRepositoryRoot(directory)) return { found: true, bareRoot: directory };
+    const parent = dirname(directory);
+    if (parent === directory) return { found: false, bareRoot: "" };
+    directory = parent;
+  }
+}
+
 
 // Decision records need a useful repository locator, never transport
 // credentials. URL userinfo and query/fragment data are unnecessary for
@@ -137,15 +174,27 @@ export function sanitizeRepositoryIdentity(value) {
   }
 }
 
-export function resolveShelf(env = process.env, home = homedir()) {
+export function resolveShelf(env = process.env, home) {
   if (env.DECISION_SHELF_HOME) return resolve(env.DECISION_SHELF_HOME);
-  const dataHome = env.XDG_DATA_HOME || join(home, ".local", "share");
+  const dataHome =
+    env.XDG_DATA_HOME ||
+    join(home || require("node:os").homedir(), ".local", "share");
   return join(dataHome, "decision-shelf");
 }
 
 export function projectFolder(cwd = process.cwd()) {
+  const resolvedCwd = resolve(cwd);
+  const { found, bareRoot } = findGitRepository(resolvedCwd);
+  if (!found) {
+    const hash = createHash("sha256")
+      .update(resolvedCwd)
+      .digest("hex")
+      .slice(0, 8);
+    return `local--${basename(resolvedCwd)}--${hash}`;
+  }
+
   const remote = sanitizeRepositoryIdentity(
-    git(["remote", "get-url", "origin"], cwd),
+    git(["remote", "get-url", "origin"], resolvedCwd),
   );
   if (remote) {
     const match = remote.match(
@@ -159,7 +208,8 @@ export function projectFolder(cwd = process.cwd()) {
       }
     }
   }
-  const root = git(["rev-parse", "--show-toplevel"], cwd) || resolve(cwd);
+  const root =
+    git(["rev-parse", "--show-toplevel"], resolvedCwd) || bareRoot || resolvedCwd;
   const hash = createHash("sha256").update(root).digest("hex").slice(0, 8);
   return `local--${basename(root)}--${hash}`;
 }
