@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 const KNOWN_SKILLS = new Set(["scout", "compass", "relay", "cairn"]);
@@ -75,33 +75,78 @@ function listHtmlRecords(shelfDir) {
   return records;
 }
 
+function readRecordStatus(location) {
+  try {
+    const text = readFileSync(location, "utf8");
+    return text.match(/data-status="([^"]*)"/)?.[1];
+  } catch {
+    return undefined;
+  }
+}
+
+function resolveShelfRecord(record, shelfDir) {
+  const records = listHtmlRecords(shelfDir);
+  const location = record.recordPath || records.at(-1);
+  return location && existsSync(location) ? location : null;
+}
+
+// Resume is the read-only form: `status <record>`. A trailing status token is
+// a mutation (`status <record> <status>`) and must not score as resume.
+function isStatusResume(argv) {
+  return argv[0] === "status" && argv.length === 2;
+}
+
+function prototypeEvidence(recordPath) {
+  if (!recordPath || !recordPath.endsWith(".html")) {
+    return { variants: [], structurally_different: false };
+  }
+  const lane = recordPath.replace(/\.html$/, ".proto");
+  if (!existsSync(lane) || !statSync(lane).isDirectory()) {
+    return { variants: [], structurally_different: false };
+  }
+  const names = readdirSync(lane, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .sort();
+  const contents = names.map((name) => {
+    const index = join(lane, name, "index.html");
+    return existsSync(index) ? readFileSync(index, "utf8") : "";
+  });
+  return {
+    variants: names.map((view) => ({ view })),
+    structurally_different: contents.length >= 2 && new Set(contents).size >= 2,
+  };
+}
+
 function eventsFromAudits(auditRecords, shelfDir) {
   const events = [];
   for (const record of auditRecords || []) {
     if (record.tool === "decision-shelf") {
       const argv = record.argv || [];
-      if (argv[0] === "new" || argv[0] === "status" || argv[0] === "proto") {
-        const records = listHtmlRecords(shelfDir);
-        const location = record.recordPath || records.at(-1);
-        if (location && existsSync(location)) {
+      const statusResume = isStatusResume(argv);
+      if (argv[0] === "new" || statusResume || argv[0] === "proto") {
+        const location = resolveShelfRecord(record, shelfDir);
+        if (location) {
           events.push({
             type: "record",
-            action: argv[0] === "status" ? "resume" : "create",
+            action: statusResume ? "resume" : "create",
             location,
             exists: true,
-            refreshed: argv[0] === "status" ? true : undefined,
-            status: "selected",
+            refreshed: statusResume ? true : undefined,
+            status: readRecordStatus(location),
           });
         }
       }
       if (argv[0] === "proto") {
+        const location = resolveShelfRecord(record, shelfDir);
+        const evidence = prototypeEvidence(location);
         events.push({
           type: "prototype",
           disposable: true,
           production_path: false,
           format: "html",
-          structurally_different: true,
-          variants: [{ view: "A" }, { view: "B" }],
+          structurally_different: evidence.structurally_different,
+          variants: evidence.variants,
         });
       }
     }
