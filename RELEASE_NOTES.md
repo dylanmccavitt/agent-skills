@@ -103,3 +103,5 @@ repository.
 `decision-shelf` and `delivery` CLIs. It continues from `@dylanmccavitt/skills`,
 retired at v3.1.1; installs written by the old package are recognized as
 package-owned and upgrade in place.
+
+<!-- runner health probe: do not merge -->
