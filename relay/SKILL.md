@@ -25,7 +25,7 @@ Every lane names an owner, a target, and at least one file. No owner and no file
 
 ## Deliver
 
-Match checks to risk. `delivery receipt` discovers and runs the repository's documented checks and drafts the receipt from live state. Call `delivery` exactly once per task, at the final head: a second call splits the evidence across two states. For tracked delivery keep one issue to one PR — branching and isolation are the harness's job — and get independent review before calling the change ready. Evidence is bound to the exact head it was produced on; if the head moves, re-verify.
+Match checks to risk. `delivery receipt` discovers and runs the repository's documented checks and drafts the receipt from live state. You own the close: doing the work, or dispatching it, is not delivering. Before you answer, call `delivery` exactly once, at the final head, lanes collected. A second call splits the evidence; no call leaves the task unfinished. For tracked delivery keep one issue to one PR — branching and isolation are the harness's job — and get independent review before calling the change ready. Evidence is bound to the exact head it was produced on; if the head moves, re-verify.
 
 ## Receipt
 

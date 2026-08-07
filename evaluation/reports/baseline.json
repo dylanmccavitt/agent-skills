@@ -10,14 +10,14 @@
     "head": "e59d152"
   },
   "live": {
-    "scenarios_passed": 21,
-    "scenario_pass_rate": 0.875,
+    "scenarios_passed": 22,
+    "scenario_pass_rate": 0.9167,
     "activation_accuracy": 0.9583,
     "contract_pass_rate": 0.9149,
-    "adversarial_cases_passed": 25,
     "false_activation_rate": 0,
-    "recorded_at": "2026-08-06T21:43:35.000Z",
-    "head": "36f8841",
-    "note": "Per-metric floor of two consecutive runs at 36f8841: run A scored 23/24 with contract 0.9787 and activation 1.0, run B scored 21/24 with contract 0.9149 and activation 0.9583. Recording the floor of each metric keeps the guard quiet through ordinary variance. The earlier 19/0.8511 floor was depressed by a mapper defect, not by skill quality: proto audits emitted a spurious create record, which failed lawful Compass resume flows. Fixing that recovered the scores. relay.parallel-independent-lanes failed in both runs and is the one standing behavior gap. Live is advisory and nondeterministic; the deterministic plumbing baseline is the strict guard."
+    "adversarial_cases_passed": 25,
+    "recorded_at": "2026-08-07T12:06:16.732Z",
+    "head": "d80a808",
+    "note": "Per-metric floor of two consecutive runs at the current relay/SKILL.md wording: run B scored 22/24 with activation 1.0 and contract 0.9149, run C scored 23/24 with activation 0.9583 and contract 0.9574. Recording the floor of each metric keeps the guard quiet through ordinary variance, so --accept was not used: it would have written run C's 23 and made the next ordinary run a regression. The gain over the previous 21/0.875 floor comes from one sentence in relay/SKILL.md Deliver ('You own the close'), which closed relay.parallel-independent-lanes \u2014 the standing behavior gap named in the previous baseline. All six relay scenarios now behave, including the two negatives that must emit nothing. The remaining live failure is scout.resume-partial-sweep, which swaps with scout.explicit-grill-session and compass.visual-ui-comparison between runs; treat it as variance, not a guarded gap. Live is advisory and nondeterministic; the deterministic plumbing baseline is the strict guard."
   }
 }
